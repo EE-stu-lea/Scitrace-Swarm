@@ -105,6 +105,10 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
     registry.PERSONAL_CONTEXT,
+    registry.SCIENTIFIC_PROVENANCE,
+    registry.STAGE_AWARE_CONTEXT,
+    registry.SCIENTIFIC_CONSISTENCY_GATE,
+    registry.RESOURCE_AUDIT,
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
@@ -169,6 +173,10 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
 # Rails shared with the team profile, appended to the code profile.
 _CODE_SHARED_RAIL_NAMES: tuple[str, ...] = (
     registry.TEAM_WORKSPACE_REPORT_PATH,
+    registry.SCIENTIFIC_PROVENANCE,
+    registry.STAGE_AWARE_CONTEXT,
+    registry.SCIENTIFIC_CONSISTENCY_GATE,
+    registry.RESOURCE_AUDIT,
     registry.PLUGIN_RAILS,
 )
 
@@ -401,7 +409,47 @@ def _context_processor_params(config: dict[str, Any]) -> dict[str, Any]:
         "context_engine_enabled": get_context_engine_enabled(config),
         "context_engine_config": _config_section(react, "context_engine_config"),
     }
+def _scientific_provenance_params(config: dict[str, Any]) -> dict[str, Any]:
+    research = _config_section(config, "research")
+    provenance = _config_section(research, "scientific_provenance")
+    return {
+        "enabled": bool(provenance.get("enabled", False)),
+        "output_root": str(provenance.get("output_root", "") or ""),
+        "capture_tool_audits": bool(provenance.get("capture_tool_audits", True)),
+    }
 
+
+def _resource_audit_params(config: dict[str, Any]) -> dict[str, Any]:
+    research = _config_section(config, "research")
+    audit = _config_section(research, "resource_audit")
+    return {
+        "enabled": bool(audit.get("enabled", False)),
+        "output_root": str(audit.get("output_root", "") or ""),
+        "write_report_on_after_invoke": bool(
+            audit.get("write_report_on_after_invoke", True)
+        ),
+    }
+
+
+def _stage_aware_context_params(config: dict[str, Any]) -> dict[str, Any]:
+    research = _config_section(config, "research")
+    stage_context = _config_section(research, "stage_aware_context")
+    return {
+        "enabled": bool(stage_context.get("enabled", False)),
+        "output_root": str(stage_context.get("output_root", "") or ""),
+        "token_budget": int(stage_context.get("token_budget", 1800) or 1800),
+        "include_conflicts": bool(stage_context.get("include_conflicts", True)),
+    }
+
+
+def _scientific_consistency_gate_params(config: dict[str, Any]) -> dict[str, Any]:
+    research = _config_section(config, "research")
+    gate = _config_section(research, "scientific_consistency_gate")
+    return {
+        "enabled": bool(gate.get("enabled", False)),
+        "output_root": str(gate.get("output_root", "") or ""),
+        "block_on_error": bool(gate.get("block_on_error", True)),
+    }
 
 def _model_anomaly_detection_params(config: dict[str, Any]) -> dict[str, Any]:
     """Attribute params for the model-anomaly / tool-loop compact rail."""
@@ -437,22 +485,39 @@ def _member_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
 # Per-element attribute params, keyed by provider name; empty for parameterless.
 _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.CONTEXT_PROCESSOR: _context_processor_params,
+
+    registry.SCIENTIFIC_PROVENANCE: _scientific_provenance_params,
+    registry.STAGE_AWARE_CONTEXT: _stage_aware_context_params,
+    registry.SCIENTIFIC_CONSISTENCY_GATE: _scientific_consistency_gate_params,
+    registry.RESOURCE_AUDIT: _resource_audit_params,
+
     registry.MODEL_ANOMALY_DETECTION: _model_anomaly_detection_params,
+
     registry.CODE_PROJECT_MEMORY: lambda c: {
         "additional_directories": _additional_directories(c)
     },
+
     registry.PERMISSION_INTERRUPT: _permission_params,
+
     registry.TEAM_PERMISSION: lambda c: {
         "permissions_config": _config_section(c, "permissions"),
     },
+
     registry.TEAM_PERMISSION_POLICY: lambda c: {
         "permissions_config": _config_section(c, "permissions"),
     },
+
     registry.CODE_CODING_MEMORY: lambda c: {
         "embed_config": _config_section(c, "embed")
     },
-    registry.USER_HOOKS: lambda c: {"hooks_section": _config_section(c, "hooks")},
-    registry.CODE_WORKTREE: lambda c: {"enabled": True},
+
+    registry.USER_HOOKS: lambda c: {
+        "hooks_section": _config_section(c, "hooks")
+    },
+
+    registry.CODE_WORKTREE: lambda c: {
+        "enabled": True
+    },
 }
 
 

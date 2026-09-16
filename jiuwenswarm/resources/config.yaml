@@ -114,6 +114,34 @@ symphony:
     # this template, and every override an operator added would be dropped.
     llm:
 
+research:
+  # SciTrace-Swarm research workflow extensions.
+  # All rails are default-off so existing JiuwenSwarm users keep the original behavior.
+
+  scientific_provenance:
+    enabled: false
+    output_root: ""
+    capture_tool_audits: true
+
+  stage_aware_context:
+    enabled: false
+    output_root: ""
+    token_budget: 1800
+    include_conflicts: true
+
+  scientific_consistency_gate:
+    enabled: false
+    output_root: ""
+    block_on_error: true
+
+  resource_audit:
+    enabled: false
+    output_root: ""
+    write_report_on_after_invoke: true
+
+
+
+
 # Auto Memory：对话结束后自动提取记忆，按项目隔离存储
 # 存储路径：~/.jiuwenswarm/projects/{sanitized-project-path}/memory/
 # 类似 Claude Code 的 auto-memory 功能
