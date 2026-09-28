@@ -1,0 +1,1 @@
+"""SciTrace-Swarm example package."""

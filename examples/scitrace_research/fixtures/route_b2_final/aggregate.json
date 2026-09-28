@@ -1,0 +1,33 @@
+{
+  "aggregation": "unweighted macro-average over datasets at the declared primary budget",
+  "datasets": [
+    {
+      "budget": 5,
+      "candidate_recall": 0.844444,
+      "convex_fixed_recall": 0.803167,
+      "dataset": "scifact",
+      "difference": 0.041277,
+      "queries": 300,
+      "result_path": "examples/scitrace_research/fixtures/route_b2_final/scifact/results.json"
+    },
+    {
+      "budget": 5,
+      "candidate_recall": 0.14355,
+      "convex_fixed_recall": 0.13697,
+      "dataset": "nfcorpus",
+      "difference": 0.00658,
+      "queries": 323,
+      "result_path": "examples/scitrace_research/fixtures/route_b2_final/nfcorpus/results.json"
+    }
+  ],
+  "macro_candidate_recall": 0.493997,
+  "macro_convex_fixed_recall": 0.4700685,
+  "macro_difference": 0.023928751432388123,
+  "stratified_paired_bootstrap": {
+    "ci95_high": 0.03717899849452794,
+    "ci95_low": 0.012169962636116057,
+    "probability_positive": 1.0,
+    "samples": 1000,
+    "seed": 42
+  }
+}

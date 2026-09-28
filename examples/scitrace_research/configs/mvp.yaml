@@ -1,0 +1,36 @@
+mode: mock
+
+literature:
+  provider: mock
+  max_results: 4
+  retries: 2
+  timeout_seconds: 15
+  verify_links: true
+  fixture_path: examples/scitrace_research/fixtures/literature_fixture.json
+
+experiment:
+  timeout_seconds: 20
+  seed: 42
+  dataset: SciTraceBench
+  metric_name: citation_support_rate
+  allowed_executables:
+    - python
+    - python.exe
+
+claim_compiler:
+  supported_threshold: 0.75
+  refuted_threshold: 0.45
+
+context:
+  token_budget: 1200
+  include_conflicts: true
+
+writer:
+  force_metric_drift: false
+
+revision:
+  max_rounds: 2
+
+debug:
+  stop_after_stage: ""
+  force_persistent_gate_failure: false

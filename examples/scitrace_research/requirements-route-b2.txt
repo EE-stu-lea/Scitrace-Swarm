@@ -1,0 +1,9 @@
+# Additional dependencies for the optional Route B2 dense/hybrid experiments.
+# The main SciTrace-Swarm workflow keeps its existing dependency set.
+markdown-it-py>=3,<5
+matplotlib>=3.8,<4
+numpy==2.4.6
+torch==2.14.0
+sentence-transformers==6.1.0
+scikit-learn==1.9.1
+scipy==1.17.1

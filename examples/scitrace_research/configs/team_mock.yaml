@@ -1,0 +1,80 @@
+mode: mock_team
+
+team:
+  template_id: scitrace_phase4
+
+literature:
+  provider: mock
+  max_results: 4
+  retries: 2
+  timeout_seconds: 15
+  verify_links: true
+  fixture_path: examples/scitrace_research/fixtures/literature_fixture.json
+
+experiment:
+  timeout_seconds: 20
+  seed: 42
+  dataset: SciTraceBench-v1.1-controlled
+  metric_name: citation_support_rate
+  allowed_executables:
+    - python
+    - python.exe
+
+claim_compiler:
+  supported_threshold: 0.75
+  refuted_threshold: 0.45
+
+context:
+  token_budget: 1200
+  include_conflicts: true
+
+revision:
+  max_rounds: 2
+
+debug:
+  stop_after_stage: ""
+  force_persistent_gate_failure: false
+
+modes:
+  team:
+    scitrace_phase4:
+      team_name: scitrace_phase4
+      lifecycle: persistent
+      teammate_mode: build_mode
+      spawn_mode: inprocess
+      workspace:
+        enabled: true
+        version_control: false
+        artifact_dirs:
+          - evidence
+          - experiments
+          - handoffs
+      leader:
+        member_name: research_leader
+        display_name: Research Leader
+        name: Research Leader
+        persona: Coordinate the research workflow and only advance validated stages.
+      agents:
+        leader: {}
+        teammate: {}
+      predefined_members:
+        - member_name: literature_ideation_agent
+          display_name: Literature & Ideation Agent
+          name: Literature & Ideation Agent
+          persona: Investigate literature, frame the research question, and propose hypotheses without inventing citations or metrics.
+        - member_name: experiment_agent
+          display_name: Experiment Agent
+          name: Experiment Agent
+          persona: Own experiment planning and implementation notes, but do not fabricate execution results.
+        - member_name: writer_agent
+          display_name: Writer Agent
+          name: Writer Agent
+          persona: Write and revise the paper using only validated claims, citations, and experiment numbers.
+        - member_name: auditor_agent
+          display_name: Auditor Agent
+          name: Auditor Agent
+          persona: Review the draft and emit structured findings only; never edit the paper directly.
+      storage:
+        type: sqlite
+        params:
+          connection_string: team.db

@@ -1,0 +1,20 @@
+[
+  {
+    "title": "Evidence Graphs for Automated Science",
+    "authors": ["Alice Zhang", "Bob Li"],
+    "year": 2026,
+    "doi": "10.5555/evidence-graphs-2026",
+    "source_url": "https://example.org/evidence-graphs-2026",
+    "summary": "Structured evidence graphs improve claim traceability and reduce unsupported statements.",
+    "reliability_score": 0.93
+  },
+  {
+    "title": "Grounded Context Engineering for Research Agents",
+    "authors": ["Cara Wang", "David Xu"],
+    "year": 2025,
+    "doi": "10.5555/context-engineering-2025",
+    "source_url": "https://example.org/context-engineering-2025",
+    "summary": "Context governance improves the consistency of automated research writing.",
+    "reliability_score": 0.88
+  }
+]

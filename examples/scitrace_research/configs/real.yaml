@@ -1,0 +1,41 @@
+mode: real
+strict_real: true
+no_mock_fallback: true
+
+literature:
+  provider: auto
+  max_results: 5
+  retries: 2
+  timeout_seconds: 20
+  verify_links: true
+  fixture_path: examples/scitrace_research/fixtures/literature_fixture.json
+
+experiment:
+  timeout_seconds: 20
+  seed: 42
+  dataset: SciTraceBench
+  metric_name: citation_support_rate
+  allowed_executables:
+    - python
+    - python.exe
+
+claim_compiler:
+  supported_threshold: 0.75
+  refuted_threshold: 0.45
+
+context:
+  token_budget: 1200
+  include_conflicts: true
+
+revision:
+  max_rounds: 2
+
+budget:
+  max_total_tokens: 50000
+  max_model_calls: 12
+  estimated_cost_per_1k_tokens: 0.0
+  max_estimated_cost: 0.0
+
+debug:
+  stop_after_stage: ""
+  force_persistent_gate_failure: false

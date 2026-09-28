@@ -1,0 +1,113 @@
+mode: real_team
+strict_real: true
+no_mock_fallback: true
+
+models:
+  defaults:
+    - model_client_config:
+        api_base: ${API_BASE}
+        api_key: ${API_KEY}
+        model_name: ${MODEL_NAME}
+        client_provider: ${MODEL_PROVIDER}
+      model_config_obj:
+        temperature: 0.0
+      is_default: true
+
+team:
+  template_id: scitrace_phase4
+  invocation_timeout_seconds: 420
+  # One initial attempt plus one repair attempt for malformed structured output.
+  # This bounds provider cost while retaining recovery from an occasional bad JSON reply.
+  max_stage_attempts: 2
+
+literature:
+  provider: auto
+  max_results: 5
+  retries: 2
+  timeout_seconds: 20
+  verify_links: true
+  fixture_path: examples/scitrace_research/fixtures/literature_fixture.json
+
+experiment:
+  timeout_seconds: 20
+  seed: 42
+  dataset: SciTraceBench-v1.1-controlled
+  metric_name: citation_support_rate
+  allowed_executables:
+    - python
+    - python.exe
+
+claim_compiler:
+  supported_threshold: 0.75
+  refuted_threshold: 0.45
+
+context:
+  token_budget: 1200
+  include_conflicts: true
+
+revision:
+  max_rounds: 2
+
+budget:
+  # Team agents may emit long reasoning traces even when their structured answer
+  # is compact. Keep the audit hard limit high enough for draft + gate/revision.
+  # Actual usage is still recorded in resource_usage.json and resource_report.md.
+  # Native Team usage includes every internal leader/member ReAct call. The
+  # per-agent iteration caps below prevent runaway loops; this remains a hard
+  # whole-run guard for a complete draft + audit/revision pass.
+  max_total_tokens: 2000000
+  max_model_calls: 12
+  estimated_cost_per_1k_tokens: 0.0
+  max_estimated_cost: 0.0
+
+debug:
+  stop_after_stage: ""
+  force_persistent_gate_failure: false
+
+modes:
+  team:
+    scitrace_phase4:
+      team_name: scitrace_phase4
+      lifecycle: persistent
+      teammate_mode: build_mode
+      spawn_mode: inprocess
+      workspace:
+        enabled: true
+        version_control: false
+        artifact_dirs:
+          - evidence
+          - experiments
+          - handoffs
+      leader:
+        member_name: research_leader
+        display_name: Research Leader
+        name: Research Leader
+        persona: Coordinate the research workflow and only advance validated stages.
+      agents:
+        leader:
+          max_iterations: 8
+          completion_timeout: 420.0
+        teammate:
+          max_iterations: 6
+          completion_timeout: 420.0
+      predefined_members:
+        - member_name: literature_ideation_agent
+          display_name: Literature & Ideation Agent
+          name: Literature & Ideation Agent
+          persona: Investigate literature, frame the research question, and propose hypotheses without inventing citations or metrics.
+        - member_name: experiment_agent
+          display_name: Experiment Agent
+          name: Experiment Agent
+          persona: Own experiment planning and implementation notes, but do not fabricate execution results.
+        - member_name: writer_agent
+          display_name: Writer Agent
+          name: Writer Agent
+          persona: Write and revise the paper using only validated claims, citations, and experiment numbers.
+        - member_name: auditor_agent
+          display_name: Auditor Agent
+          name: Auditor Agent
+          persona: Review the draft and emit structured findings only; never edit the paper directly.
+      storage:
+        type: sqlite
+        params:
+          connection_string: team.db
