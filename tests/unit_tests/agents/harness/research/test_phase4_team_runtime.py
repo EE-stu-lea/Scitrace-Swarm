@@ -401,12 +401,12 @@ def test_openjiuwen_backend_ignores_non_json_leader_answer_until_structured_resu
             self.type = type_
             self.payload = payload
 
-    waiting_text = "已将 topic_intake / research_question 阶段任务指派给 literature_ideation_agent，正在等待结构化交接 payload。"
+    waiting_text = "正在处理 topic_intake / research_question 阶段，尚未形成结构化结果。"
     final_text = json.dumps(
         {
             "stage": "topic_intake",
             "operation": "research_question",
-            "from_member": "literature_ideation_agent",
+            "from_member": "research_leader",
             "to_member": "research_leader",
             "research_id": "team_case",
             "permissions_ack": True,

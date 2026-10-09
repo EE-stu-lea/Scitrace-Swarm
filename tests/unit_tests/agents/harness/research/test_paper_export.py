@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
+import shutil
 import pytest
 from examples.scitrace_research.build_submission import _valid_official_pr_url
 from examples.scitrace_research.paper_export import draft_tex, digest, export, verify
+from examples.scitrace_research.workflow.budget_effect_figure import load_budget_effects, render_budget_effect_figure
 
 
 def test_agent_text_and_table_preserved_metadata_removed():
@@ -10,9 +12,31 @@ def test_agent_text_and_table_preserved_metadata_removed():
     assert 'Unique title' in tex
     assert 'Agent-specific result' in tex
     assert '0.731' in tex
-    assert 'longtable' in tex
+    assert r'\begin{minipage}{\linewidth}' in tex
+    assert r'\begin{tabular}' in tex
     assert 'Structured References' not in tex
     assert 'Scientific agents can produce fluent papers' not in tex
+
+
+def test_team_handoff_preamble_is_not_typeset_as_paper_content():
+    draft = (
+        'Delegation is in place. Here is the returned handoff from the draft stage.\n\n'
+        '---\n\n# Research title\n\n## Abstract\n\nScientific result.\n'
+    )
+    tex = draft_tex(draft)
+    assert 'Delegation is in place' not in tex
+    assert r'\begin{abstract}' in tex
+    assert 'Scientific result.' in tex
+    assert draft.startswith('Delegation is in place')
+
+
+def test_pdf_latex_typesets_non_latin_reference_name_without_editing_draft():
+    source = '# Title\n\n## References\nАртем Сахно. Evidence × Budget…'
+    tex = draft_tex(source)
+    assert 'Artem Sakhno' in tex
+    assert r'\ensuremath{\times}' in tex
+    assert r'\ldots{}' in tex
+    assert 'Артем Сахно' in source
 
 
 def test_unsupported_content_not_silently_lost():
@@ -112,9 +136,33 @@ def test_verified_result_figure_is_typeset_without_rewriting_prose():
         'The budget sweep is shown below.\n\n'
         '![Evidence recall across budgets](figures/recall_by_budget.pdf)\n'
     )
-    assert r'\includegraphics[width=0.78\linewidth]{figures/recall_by_budget.pdf}' in tex
+    assert r'\includegraphics[width=\linewidth]{figures/recall_by_budget.pdf}' in tex
     assert r'\caption{Evidence recall across budgets}' in tex
     assert 'The budget sweep is shown below.' in tex
+
+
+def test_budget_effect_figure_uses_verified_artifacts(tmp_path):
+    fixture = Path(__file__).resolve().parents[5] / 'examples/scitrace_research/fixtures/route_b2_final'
+    artifacts = tmp_path / 'experiments/route_b2_artifacts'
+    shutil.copytree(fixture, artifacts)
+    figure = render_budget_effect_figure(tmp_path, tmp_path / 'figures')
+    assert figure is not None
+    assert figure['figure'].is_file()
+    assert len(figure['sources']) == 4
+    assert figure['manifest']['figure_sha256'] == digest(figure['figure'])
+    assert figure['manifest']['data_sha256'] == digest(figure['data'])
+    data = load_budget_effects(tmp_path)
+    assert data is not None
+    assert [item['dataset'] for item in data['series']] == ['scifact', 'nfcorpus', 'fiqa_lexical']
+    assert all(item['budgets'] == [2, 3, 5, 8] for item in data['series'])
+    tex = draft_tex('# Title\n\n## Results\n![Change in evidence recall with budget-5 paired-bootstrap intervals on SciFact, NFCorpus, and FiQA](figures/budget_effect.pdf)')
+    assert r'\includegraphics[width=\linewidth]{figures/budget_effect.pdf}' in tex
+    aggregate = artifacts / 'aggregate.json'
+    payload = json.loads(aggregate.read_text(encoding='utf-8'))
+    payload['datasets'][0]['candidate_recall'] = 0.0
+    aggregate.write_text(json.dumps(payload), encoding='utf-8')
+    with pytest.raises(ValueError, match='differs from aggregate'):
+        load_budget_effects(tmp_path)
 
 
 def test_agent_figure_caption_is_not_duplicated_in_pdf():
@@ -137,6 +185,60 @@ def test_plain_agent_figure_caption_is_typeset_once():
     assert tex.count(caption) == 1
     assert r'\caption{' + caption + '}' in tex
     assert 'The results differ by dataset.' in tex
+
+
+@pytest.mark.parametrize('figure_path', [
+    'figures/recall_by_budget.pdf', 'figures/budget_effect.pdf',
+    'figures/method_overview.pdf', 'figures/query_risk.pdf',
+])
+@pytest.mark.parametrize('wrapper', ['', '*', '**'])
+def test_numbered_wrapped_caption_and_artifact_path_are_typeset_once(figure_path, wrapper):
+    draft = (
+        '# Title\n\n## Results\n'
+        f'![Short alt text]({figure_path})\n\n'
+        f'{wrapper}Figure 2 ({figure_path}). Observed differences at each budget.\n'
+        f'Intervals are conditional on the realized allocation.{wrapper}\n\n'
+        'The negative result remains visible.\n'
+    )
+    tex = draft_tex(draft)
+    assert tex.count(r'\caption{') == 1
+    assert tex.count('Observed differences at each budget.') == 1
+    assert 'Intervals are conditional on the realized allocation.' in tex
+    assert 'Short alt text' not in tex
+    assert 'Figure 2 (' not in tex
+    assert 'The negative result remains visible.' in tex
+    assert f'Figure 2 ({figure_path})' in draft
+
+
+def test_caption_citations_and_following_figure_discussion_are_preserved():
+    tex = draft_tex(
+        '# Title\n\n## Results\n'
+        '![Short caption](figures/budget_effect.pdf)\n\n'
+        'Figure 2: Comparison to `evidence_aabbcc`.\n\n'
+        'Figure 2 shows a negative difference on FiQA.\n\n'
+        '## References\n1. `evidence_aabbcc` Author. Prior work.\n'
+    )
+    assert r'\caption{Comparison to [1].}' in tex
+    assert 'Figure 2 shows a negative difference on FiQA.' in tex
+
+
+def test_image_followed_by_result_discussion_keeps_original_caption():
+    tex = draft_tex(
+        '# Title\n\n## Results\n'
+        '![Short caption](figures/budget_effect.pdf)\n\n'
+        'Figure 2 shows a negative difference on FiQA.\n'
+    )
+    assert r'\caption{Short caption}' in tex
+    assert 'Figure 2 shows a negative difference on FiQA.' in tex
+
+
+def test_separate_emphasis_spans_in_caption_remain_balanced():
+    tex = draft_tex(
+        '# Title\n\n## Results\n'
+        '![Short caption](figures/budget_effect.pdf)\n\n'
+        '**Figure 2: Observed differences.** Intervals are **pointwise**.\n'
+    )
+    assert r'\caption{\textbf{Observed differences.} Intervals are \textbf{pointwise}.}' in tex
 
 
 def test_audit_only_research_hypothesis_and_claim_ids_are_hidden():
@@ -218,6 +320,66 @@ def test_scientific_unicode_is_pdftex_safe():
     assert r'\ensuremath{\sigma}' in tex
     assert r'\ensuremath{\Delta}' in tex
     assert r'CO\textsubscript{2}' in tex
+
+
+@pytest.mark.parametrize('opening,closing', [('$', '$'), (r'\(', r'\)')])
+def test_inline_allocation_math_preserves_scientific_notation(opening, closing):
+    equation = r'\sum_{i=1}^{n} k_i = B,\quad k_i \in \{0,\ldots,K\}'
+    tex = draft_tex(f'# Title\n\n## Method\nThe constraint is {opening}{equation}{closing}.')
+    assert r'\(' + equation + r'\)' in tex
+    assert r'\textbackslash{}sum' not in tex
+
+
+def test_inverse_distance_formula_with_norm_and_epsilon_typesets():
+    equation = (
+        r'v_{ij} = \frac{1}{\lVert x_i-x_j \rVert_2 + \epsilon}, '
+        r'\qquad \epsilon = 10^{-6}'
+    )
+    tex = draft_tex(f'# Title\n\n## Method\nThe weighting is \\({equation}\\).')
+    assert r'\(' + equation + r'\)' in tex
+
+
+def test_escaped_hash_in_token_count_math_typesets():
+    equation = r'\log(1 + \#\mathrm{tokens})'
+    tex = draft_tex(f'# Title\n\n## Method\nCost is \\({equation}\\).')
+    assert r'\(' + equation + r'\)' in tex
+
+
+@pytest.mark.parametrize('opening,closing', [('$$', '$$'), (r'\[', r'\]')])
+@pytest.mark.parametrize('newline', ['', '\n'])
+def test_display_allocation_math_preserves_objective(opening, closing, newline):
+    equation = r'\max_{k_1,\ldots,k_n} \sum_{i=1}^{n} \hat{r}_i(k_i)'
+    tex = draft_tex(f'# Title\n\n## Method\n{opening}{newline}{equation}{newline}{closing}\n\nNext paragraph.')
+    assert '\\[\n' + equation + '\n\\]' in tex
+    assert 'Next paragraph.' in tex
+
+
+@pytest.mark.parametrize('unsafe', [
+    r'\input{secret}', r'\include{secret}', r'\write18{command}',
+    r'\newcommand{\x}{secret}', r'\csname input\endcsname',
+    r'\begin{document}', r'\catcode1=2', r'\text{\input{secret}}',
+    r'^^5cinput{secret}', 'x%comment', 'x#1', 'x&y',
+    'x}', '{x', 'x' * 2001,
+])
+def test_math_rejects_control_commands_and_invalid_expressions(unsafe):
+    with pytest.raises(ValueError, match='Unsupported math'):
+        draft_tex(f'# Title\n\n## Method\n${unsafe}$')
+
+
+def test_standard_floor_math_is_supported_for_neighbor_count():
+    tex = draft_tex('# Title\n\n## Method\n' + r'\(k=\max(10,\lfloor\sqrt{M}\rfloor)\)')
+    assert r'\lfloor\sqrt{M}\rfloor' in tex
+
+
+def test_math_keeps_code_and_currency_as_literal_prose():
+    tex = draft_tex('# Title\n\n## Method\nCost is $5 versus $10. Code: `$x_i$`.')
+    assert r'Cost is \$5 versus \$10.' in tex
+    assert r'Code: \$x\_\allowbreak{}i\$.' in tex
+
+
+def test_unclosed_display_math_fails_before_compilation():
+    with pytest.raises(ValueError, match='Unclosed display math'):
+        draft_tex('# Title\n\n## Method\n$$\nx_i = 1\n')
 
 
 def test_pdf_mutation_invalidates_binding(tmp_path):

@@ -34,6 +34,7 @@ def install_openjiuwen_stubs() -> None:
         "openjiuwen.core",
         "openjiuwen.core.foundation",
         "openjiuwen.core.foundation.kv_cache",
+        "openjiuwen.core.kv_cache",
         "openjiuwen.core.single_agent",
         "openjiuwen.core.single_agent.rail",
         "openjiuwen.harness",
@@ -55,6 +56,7 @@ def install_openjiuwen_stubs() -> None:
         enable_kv_cache_affinity: bool = False
 
     kv_cache.KVCacheAffinityConfig = _KVCacheAffinityConfig
+    _ensure_module("openjiuwen.core.kv_cache").KVCacheAffinityConfig = _KVCacheAffinityConfig
 
     harness_rail_base = _ensure_module("openjiuwen.harness.rails.base")
 

@@ -1,0 +1,6 @@
+# Paper writing from the included verified artifacts does not require training
+# or a dense-retrieval GPU stack. Install after the repository dependencies.
+markdown-it-py>=3,<5
+matplotlib>=3.8,<4
+numpy>=1.24,<3
+openai>=1,<3

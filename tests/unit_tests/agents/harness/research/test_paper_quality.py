@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from examples.scitrace_research.workflow.paper_quality import audit_draft, select_literature
+from examples.scitrace_research.workflow.paper_narrative import audit_narrative
 from examples.scitrace_research.workflow.pipeline import (
     _adaptive_baseline_rows, _durable_usage_summary, _paper_results_view,
     _restore_prior_tool_usage, _train_subsampling_rows,
@@ -116,6 +117,68 @@ def test_results_tables_need_agent_written_captions() -> None:
     assert audit_draft(captioned, evidence=[], config=cfg)["ok"]
 
 
+def test_short_figure_alt_and_adjacent_scientific_caption_are_accepted() -> None:
+    draft = (
+        "# Title\n\n## Method\n\n"
+        "![Method overview](figures/method_overview.pdf)\n\n"
+        "*Figure 1: Training and test queries are separated; the frozen model changes only the allocation component.*\n\n"
+        "## Results\n\n### RQ1: Effect\n\n### RQ2: Risk\n\n### RQ3: Boundary\n\n"
+        "![Query risk](figures/query_risk.pdf)\n\n"
+        "*Figure 2: Query gains and losses are descriptive for the realized fixed allocation, not new-batch reliability.*\n\n"
+        "![Budget effect](figures/budget_effect.pdf)\n\n"
+        "*Figure 3: SciFact, NFCorpus and FiQA effects have pointwise intervals at every budget, not simultaneous bands.*\n\n"
+        "## Discussion\n\nThe negative result bounds deployment claims.\n"
+    )
+    assert audit_narrative(draft) == []
+    assert audit_draft(draft, evidence=[], config={"enabled": True,
+        "require_budget_effect_figure": True})["ok"]
+
+
+def test_italic_table_caption_and_verified_fiqa_slug_row_are_accepted() -> None:
+    draft = (
+        "# Title\n\n## Results\n\n"
+        "*Table 1: Verified per-query outcomes at the primary matched document budget.*\n\n"
+        "| Dataset | Wins | Ties | Losses | Rescued | Newly missed |\n"
+        "|---|---:|---:|---:|---:|---:|\n"
+        "| fiqa_lexical | 23 | 601 | 24 | 14 | 18 |\n"
+    )
+    diagnostics = {"primary_budget": 5, "summaries": [{
+        "dataset": "fiqa_lexical", "budget": 5, "wins": 23, "ties": 601,
+        "losses": 24, "rescued_from_no_evidence": 14, "newly_no_evidence": 18,
+    }]}
+    report = audit_draft(draft, evidence=[], config={"enabled": True,
+        "require_table_captions": True, "require_query_outcome_table": True},
+        query_diagnostics=diagnostics)
+    assert report["ok"], report["errors"]
+
+
+def test_period_captions_and_descriptive_fiqa_label_are_accepted() -> None:
+    draft = (
+        "## Results\n\n"
+        "**Table 1.** Evidence recall under a paired comparison at the primary budget, "
+        "with descriptive lexical stress-test evidence and intervals.\n\n"
+        "| Dataset | Candidate | Fixed baseline | Difference | Paired 95% CI |\n"
+        "|---|---:|---:|---:|---:|\n"
+        "| FiQA (lexical stress test) | 0.238800 | 0.242454 | -0.003654 | [-0.015728, 0.007071] |\n\n"
+        "**Table 2.** Descriptive adaptive baselines at the primary budget, "
+        "with no additional uncertainty claim.\n\n"
+        "| Dataset | Raw | Binned | kNN |\n"
+        "|---|---:|---:|---:|\n"
+        "| SciFact | 0.79 | 0.81 | 0.84 |\n"
+    )
+    report = audit_draft(
+        draft,
+        evidence=[],
+        config={"enabled": True, "require_results_table": True, "require_table_captions": True},
+        table_rows=[{
+            "dataset": "FiQA (lexical)", "candidate": 0.238800,
+            "fixed_baseline": 0.242454, "difference": -0.003654,
+            "ci95": [-0.015728, 0.007071],
+        }],
+    )
+    assert report["ok"], report["errors"]
+
+
 def test_resumed_usage_includes_original_and_revision_calls(tmp_path: Path) -> None:
     import json
 
@@ -134,6 +197,8 @@ def test_resumed_usage_includes_original_and_revision_calls(tmp_path: Path) -> N
     total = _durable_usage_summary(path, CurrentOnly())
     assert total["total"] == {
         "request_count": 2,
+        "provider_calls": 0,
+        "missing_usage_calls": 0,
         "prompt_tokens": 130,
         "completion_tokens": 30,
         "total_tokens": 160,

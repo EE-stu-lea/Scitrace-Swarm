@@ -331,6 +331,64 @@ def optimal_allocation_from_values(
     average_budget: int,
     maximum_budget: int = 10,
 ) -> dict[str, int]:
+    """Exact DP with vectorized state updates and compact backtracking.
+
+    Query order, ascending depth order and strict-improvement tie breaking
+    match the scalar reference. NumPy is optional: the standard-library
+    experiment remains usable without it. Complexity remains O(n B K), but
+    the total-budget loop is executed in native array operations.
+    """
+    for name, value in (("average_budget", average_budget), ("maximum_budget", maximum_budget)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    if not values_by_query:
+        return {}
+    query_ids = sorted(values_by_query)
+    for query_id in query_ids:
+        values = values_by_query[query_id]
+        if len(values) <= maximum_budget or not all(math.isfinite(x) for x in values[:maximum_budget + 1]):
+            raise ValueError("each recall curve must provide finite values at depths 0..maximum_budget")
+    try:
+        import numpy as np
+    except ImportError:
+        return _optimal_allocation_scalar(values_by_query, average_budget=average_budget,
+                                          maximum_budget=maximum_budget)
+    target = min(average_budget, maximum_budget) * len(query_ids)
+    previous = np.full(target + 1, -np.inf, dtype=np.float64)
+    previous[0] = 0.0
+    # Only depth decisions are retained; value states use two rolling rows.
+    choices = np.zeros((len(query_ids), target + 1), dtype=np.min_scalar_type(maximum_budget))
+    for query_index, query_id in enumerate(query_ids, start=1):
+        current = np.full(target + 1, -np.inf, dtype=np.float64)
+        maximum_total = min(target, query_index * maximum_budget)
+        for depth in range(1, min(maximum_budget, maximum_total) + 1):
+            start = max(query_index, depth)
+            if start > maximum_total:
+                continue
+            candidates = previous[start-depth:maximum_total+1-depth] + values_by_query[query_id][depth]
+            view = current[start:maximum_total+1]
+            improved = candidates > view
+            np.copyto(view, candidates, where=improved)
+            decisions = choices[query_index-1, start:maximum_total+1]
+            decisions[improved] = depth
+        previous = current
+    if not np.isfinite(previous[target]):
+        raise ValueError("allocation could not satisfy the requested budget")
+    allocation = {}
+    remaining = target
+    for query_index in range(len(query_ids)-1, -1, -1):
+        depth = int(choices[query_index, remaining])
+        allocation[query_ids[query_index]] = depth
+        remaining -= depth
+    return allocation
+
+
+def _optimal_allocation_scalar(
+    values_by_query: dict[str, list[float]],
+    *,
+    average_budget: int,
+    maximum_budget: int = 10,
+) -> dict[str, int]:
     """Maximize summed query values for an exact global document budget."""
     query_ids = sorted(values_by_query)
     target = min(average_budget * len(query_ids), maximum_budget * len(query_ids))

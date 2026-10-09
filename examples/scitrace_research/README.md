@@ -1,5 +1,11 @@
 # SciTrace Research
 
+The **final** iteration adds question-led manuscript generation, verified query
+risk diagnostics and scoped native Team execution. See
+[paper design](docs/final_paper_design.md) and [system design](docs/final_system_design.md).
+For writing from saved artifacts, install `requirements-paper.txt`; the dense
+experiment stack is only needed when rerunning retrieval.
+
 SciTrace Research is a JiuwenSwarm Team workflow for producing an auditable
 scientific short paper. It connects literature retrieval, restricted experiment
 execution or verified artifact import, claim provenance, Agent writing,
@@ -40,7 +46,8 @@ export API_KEY='your-secret-key'
 export MODEL_NAME='your-model-name'
 export MODEL_PROVIDER='openai'
 
-bash examples/scitrace_research/run_route_b2.sh
+bash examples/scitrace_research/launch_paper.sh --check
+bash examples/scitrace_research/launch_paper.sh
 ```
 
 The default workflow imports the hash-checked Route B2 fixture included under

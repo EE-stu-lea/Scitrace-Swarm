@@ -28,7 +28,11 @@ TEAM_STAGE_CONTRACTS: dict[tuple[str, str], TeamStageContract] = {
     ("topic_intake", "research_question"): TeamStageContract(
         stage="topic_intake",
         operation="research_question",
-        primary_member=ROLE_LITERATURE_IDEATION,
+        # Framing the supplied topic is a short leader-owned stage. A native
+        # delegation here spent multiple provider calls on task-board polling
+        # before any structured research result was available. Literature
+        # retrieval remains a separate evidence-producing workflow stage.
+        primary_member=ROLE_RESEARCH_LEADER,
         result_kind="json",
         write_scope=("research_question", "hypothesis"),
         summary="Generate the research question and hypothesis from topic intake.",
@@ -114,6 +118,7 @@ def build_team_query(
     research_id: str,
     system_prompt: str,
     user_prompt: str,
+    compact: bool = False,
 ) -> str:
     handoff_spec = {
         "stage": contract.stage,
@@ -124,17 +129,26 @@ def build_team_query(
         "permissions_ack": True,
         "write_scope": list(contract.write_scope),
     }
+    delegation = (
+        "The leader owns this stage: complete it directly, without delegating to yourself or another member.\n"
+        if contract.primary_member == ROLE_RESEARCH_LEADER else
+        f"The leader must delegate once to `{contract.primary_member}` and return the member's complete result.\n"
+    )
+    handoff_round = (
+        "- Answer directly from the complete Stage System Prompt and Stage User Prompt; no delegation is required.\n"
+        if contract.primary_member == ROLE_RESEARCH_LEADER else
+        "- Complete this bounded stage in one delegation round. Include the complete Stage System Prompt "
+        "and Stage User Prompt in that delegation; a reference without their contents is insufficient. "
+        "The primary member must answer only from those prompts. After receiving the result, the leader "
+        "must immediately return the required final envelope.\n"
+    )
     envelope_rules = (
-        "Coordinate as a JiuwenSwarm native team. The leader must delegate the task to the "
-        f"primary member `{contract.primary_member}` and return a structured handoff.\n"
+        "Coordinate as a JiuwenSwarm native team. " + delegation +
         "Critical rules:\n"
         f"- {contract.summary}\n"
-        "- Complete this bounded stage in one delegation round. Do not browse, search, inspect files, "
+        + handoff_round +
+        "- Do not browse, search, inspect files, "
         "run shell commands, write files, create plans, or spawn additional members.\n"
-        "- Include the complete Stage System Prompt and Stage User Prompt in the delegation to the primary member; "
-        "a reference to those prompts without their contents is insufficient. "
-        "The primary member must answer only from those prompts. "
-        "After receiving it, the leader must immediately return the required final envelope.\n"
         "- Use structured handoff only for the final answer; do not rely on free-form chat for the final payload.\n"
         "- The writer may not change experiment metrics or claim status.\n"
         "- The auditor may only return structured review findings.\n"
@@ -143,25 +157,83 @@ def build_team_query(
     if contract.result_kind == "json":
         envelope_rules += (
             "Return exactly one JSON object with this top-level shape:\n"
-            + json.dumps({**handoff_spec, "result": {"...": "stage specific payload"}}, ensure_ascii=False, indent=2)
+            + json.dumps({**handoff_spec, "result": {"...": "stage specific payload"}}, ensure_ascii=False,
+                         indent=None if compact else 2, separators=(",", ":") if compact else None)
             + "\nDo not wrap the JSON in markdown fences.\n"
         )
     else:
         envelope_rules += (
+            "The first line must be the manuscript's `# Title`. Do not prepend delegation status, "
+            "coordination narration, a cover note, or a code fence around the manuscript.\n"
             "Return the markdown result first, then append a section exactly named `## Team Handoff`\n"
             "followed by one fenced JSON block containing only the handoff metadata with this shape:\n"
-            + json.dumps(handoff_spec, ensure_ascii=False, indent=2)
+            + json.dumps(handoff_spec, ensure_ascii=False, indent=None if compact else 2,
+                         separators=(",", ":") if compact else None)
             + "\nDo not add any text after the handoff block.\n"
         )
     return (
         envelope_rules
         + "\n# Role Personas\n"
-        + "\n".join(f"- `{role}`: {persona}" for role, persona in ROLE_PERSONAS.items())
+        + "\n".join(f"- `{role}`: {persona}" for role, persona in ROLE_PERSONAS.items()
+                    if not compact or role in {ROLE_RESEARCH_LEADER, contract.primary_member})
         + "\n\n# Stage System Prompt\n"
         + system_prompt.strip()
         + "\n\n# Stage User Prompt\n"
         + user_prompt.strip()
         + "\n"
+    )
+
+
+def build_direct_specialist_query(
+    *,
+    contract: TeamStageContract,
+    research_id: str,
+    system_prompt: str,
+    user_prompt: str,
+    compact: bool = False,
+) -> str:
+    """Call a named specialist once without asking the model to poll a task board.
+
+    The same handoff schema and scientific prompts are used by the native Team
+    route. Only coordination instructions differ, so completed checkpoints can
+    safely be retained when a failed delegated stage changes route.
+    """
+    if contract.primary_member == ROLE_RESEARCH_LEADER:
+        raise ValueError("direct specialist route requires a specialist-owned stage")
+    handoff = {
+        "stage": contract.stage,
+        "operation": contract.operation,
+        "from_member": contract.primary_member,
+        "to_member": ROLE_RESEARCH_LEADER,
+        "research_id": research_id,
+        "permissions_ack": True,
+        "write_scope": list(contract.write_scope),
+    }
+    shape = json.dumps(handoff, ensure_ascii=False, indent=None if compact else 2,
+                       separators=(",", ":") if compact else None)
+    rules = (
+        f"You are `{contract.primary_member}` in the SciTrace research workflow. "
+        f"{ROLE_PERSONAS[contract.primary_member]}\n"
+        f"Task: {contract.summary}\n"
+        "Complete this stage directly. Do not coordinate, delegate, poll tasks, browse, "
+        "run tools, or invent citations or experiment results. Preserve supplied IDs "
+        "and numerical results exactly. Answer only from the two stage prompts.\n"
+    )
+    if contract.result_kind == "json":
+        rules += (
+            "Return one JSON object, without markdown fences, with these handoff "
+            f"fields and a `result` object containing the stage answer: {shape}\n"
+        )
+    else:
+        rules += (
+            "Start with the manuscript's `# Title`; return the full markdown "
+            "manuscript and no preface. Append `## Team Handoff` followed by one "
+            f"fenced JSON block containing exactly these metadata fields: {shape}\n"
+            "Do not add text after the handoff block.\n"
+        )
+    return (
+        rules + "\n# Stage System Prompt\n" + system_prompt.strip()
+        + "\n\n# Stage User Prompt\n" + user_prompt.strip() + "\n"
     )
 
 
@@ -204,6 +276,7 @@ __all__ = [
     "TEAM_STAGE_CONTRACTS",
     "TEAM_TEMPLATE_ID",
     "TeamStageContract",
+    "build_direct_specialist_query",
     "build_team_query",
     "get_team_stage_contract",
     "validate_team_handoff_metadata",

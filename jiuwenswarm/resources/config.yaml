@@ -114,10 +114,9 @@ symphony:
     # this template, and every override an operator added would be dropped.
     llm:
 
+# SciTrace research workflow extensions. Every rail is disabled by default, so
+# adding this section does not change existing JiuwenSwarm behavior.
 research:
-  # SciTrace-Swarm research workflow extensions.
-  # All rails are default-off so existing JiuwenSwarm users keep the original behavior.
-
   scientific_provenance:
     enabled: false
     output_root: ""
@@ -138,9 +137,6 @@ research:
     enabled: false
     output_root: ""
     write_report_on_after_invoke: true
-
-
-
 
 # Auto Memory：对话结束后自动提取记忆，按项目隔离存储
 # 存储路径：~/.jiuwenswarm/projects/{sanitized-project-path}/memory/

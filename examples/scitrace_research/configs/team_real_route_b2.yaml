@@ -1,54 +1,111 @@
+# final: scoped Team and stage ceilings; these are guards, not measured cost savings.
 mode: real_team
 strict_real: true
 no_mock_fallback: true
-
 models:
   defaults:
-    - model_client_config:
-        api_base: ${API_BASE}
-        api_key: ${API_KEY}
-        model_name: ${MODEL_NAME}
-        client_provider: ${MODEL_PROVIDER}
-      model_config_obj:
-        temperature: 0.0
-      is_default: true
-
+  - model_client_config:
+      api_base: ${API_BASE}
+      api_key: ${API_KEY}
+      model_name: ${MODEL_NAME}
+      client_provider: ${MODEL_PROVIDER}
+    model_config_obj:
+      temperature: 0.0
+    is_default: true
 team:
   template_id: scitrace_phase4
   invocation_timeout_seconds: 900
-  # One initial attempt plus one repair attempt for malformed structured output.
-  # This bounds provider cost while retaining recovery from an occasional bad JSON reply.
+  stage_timeout_seconds:
+    draft: 1800
+    review: 1800
+    revision: 1800
   max_stage_attempts: 2
-
+  max_invocation_provider_calls: 20
+  max_invocation_total_tokens: 1500000
+  stage_scoped_team: true
+  stage_capability_profile: prompt_only
+  # Avoid unbounded task-board polling in specialist-owned Team stages.
+  # Each named role makes one native openJiuwen model request per stage attempt.
+  direct_specialist_stages:
+  - experiment_plan
+  - draft
+  - review
+  - revision
+  compact_handoff: true
+  max_invocation_prompt_bytes: 250000
+  stage_resource_limits:
+    topic_intake:
+      max_total_tokens: 150000
+      max_provider_calls: 8
+      max_prompt_bytes: 30000
+    experiment_plan:
+      max_total_tokens: 300000
+      max_provider_calls: 10
+      max_prompt_bytes: 100000
+    claim_compiler:
+      max_total_tokens: 300000
+      max_provider_calls: 8
+      max_prompt_bytes: 120000
+    draft:
+      max_total_tokens: 1200000
+      max_provider_calls: 16
+      max_prompt_bytes: 250000
+    review:
+      max_total_tokens: 1000000
+      max_provider_calls: 16
+      max_prompt_bytes: 250000
+    revision:
+      max_total_tokens: 1200000
+      max_provider_calls: 16
+      max_prompt_bytes: 250000
 literature:
   provider: auto
   max_results: 10
-  # Search multiple nearby concepts, then retain only papers whose cached
-  # title/abstract matches at least two focus stems. Selection is audited.
   search_queries:
-    - adaptive retrieval budget allocation scientific evidence
-    - query difficulty prediction information retrieval
-    - hybrid sparse dense retrieval BEIR SciFact
-    - retrieval augmented generation context budget rank fusion
-    - adaptive retrieval depth query difficulty budget allocation
-    - calibrated retrieval budget allocation variable top k context
-    - Adaptive-RAG Learning to Adapt Retrieval-Augmented Large Language Models through Question Complexity
-    - Know Before You Fetch Calibrated Retrieval-Budget Allocation for Retrieval-Augmented Generation
-  focus_terms: [retriev, rank, quer, budget, benchmark, fusion, rag, evidence, search, allocat, adapt, difficul, depth]
+  - adaptive retrieval budget allocation scientific evidence
+  - query difficulty prediction information retrieval
+  - hybrid sparse dense retrieval BEIR SciFact
+  - retrieval augmented generation context budget rank fusion
+  - adaptive retrieval depth query difficulty budget allocation
+  - calibrated retrieval budget allocation variable top k context
+  - Adaptive-RAG Learning to Adapt Retrieval-Augmented Large Language Models through Question Complexity
+  - Know Before You Fetch Calibrated Retrieval-Budget Allocation for Retrieval-Augmented Generation
+  - BEIR A Heterogeneous Benchmark for Zero shot Evaluation of Information Retrieval Models
+  - Fact or Fiction Verifying Scientific Claims
+  focus_terms:
+  - retriev
+  - rank
+  - quer
+  - budget
+  - benchmark
+  - fusion
+  - rag
+  - evidence
+  - search
+  - allocat
+  - adapt
+  - difficul
+  - depth
+  - beir
+  - verif
+  - scientific
   minimum_focus_terms: 2
-  min_relevant_results: 4
+  min_relevant_results: 6
   priority_title_term_groups:
-    - [retriev]
-    - [allocat, adapt, depth]
+  - - retriev
+  - - allocat
+    - adapt
+    - depth
   minimum_priority_results: 1
   retries: 2
   timeout_seconds: 20
   verify_links: true
   fixture_path: examples/scitrace_research/fixtures/literature_fixture.json
-
+  reserved_title_phrases:
+  - BEIR
+  - Fact or Fiction
+  - Adaptive RAG
 experiment:
-  # Import the independently reproduced Route B2 result bundle. The importer
-  # verifies the 1000-sample bootstrap artifacts and records their SHA-256s.
   implementation: route_b2_artifact
   timeout_seconds: 120
   seed: 42
@@ -56,106 +113,229 @@ experiment:
   artifact_dir: examples/scitrace_research/fixtures/route_b2_final
   metric_name: macro_evidence_recall
   allowed_executables:
-    - python
-    - python.exe
-
+  - python
+  - python.exe
 claim_compiler:
   supported_threshold: 0.75
   refuted_threshold: 0.45
-
 context:
   token_budget: 1200
   include_conflicts: true
-
 revision:
   max_rounds: 2
-
 paper_quality:
   enabled: true
+  validate_typesetting: true
+  require_route_b2_method_contract: true
   require_results_table: true
   require_results_figure: true
+  require_budget_effect_figure: true
   require_table_captions: true
   require_adaptive_baseline_table: true
   require_train_subsampling_summary: true
-  focus_terms: [retriev, rank, quer, budget, benchmark, fusion, rag, evidence, search, allocat, adapt, difficul, depth]
+  require_feature_ablation_table: true
+  minimum_section_words:
+    Method: 300
+    Experimental Setup: 180
+    Results: 550
+    Discussion: 180
+  manuscript_plan:
+    suggested_body_words:
+    - 3000
+    - 3800
+    purpose: Answer the three supplied research questions with controlled comparisons and measured evidence. Length is
+      a completeness guide, never a page target.
+    Introduction:
+    - State the batch allocation problem, a concise takeaway including the FiQA negative result, the three RQs, and evidence-backed
+      contributions.
+    Related Work:
+    - Contrast per-query adaptive retrieval with joint batch allocation; cite retrieved foundational benchmark and scientific
+      verification sources as well as direct adaptive retrieval work.
+    Method:
+    - Use figures/method_overview.pdf to locate the changed allocation component and the frozen train/test boundary.
+      Define features, recall curves, exact integer objective and tie handling.
+    Experimental Setup:
+    - 'State controls using the supplied controlled_comparisons: what is fixed, what varies, metric and uncertainty scope.
+      Explain artifact import and retrospective diagnostics.'
+    Results:
+    - 'Use exactly three substantive subsections: RQ1: Matched-budget effectiveness; RQ2: Redistribution and query risk;
+      RQ3: Sensitivity and boundary conditions.'
+    - 'RQ1: show Table 1 primary effects, Table 2 descriptive adaptive baselines and budget_effect.pdf plus recall_by_budget.pdf.
+      Emphasize macro result versus per-dataset heterogeneity.'
+    - 'RQ2: show figures/query_risk.pdf and Table 3 verified query outcome counts. Explain positive/negative contributions,
+      rescued and newly missed queries, and unchanged-recall extra allocation. Treat all as descriptive observed outcomes.'
+    - 'RQ3: interpret adaptive-baseline comparison and show Table 4 feature ablations, five subset draws, and FiQA boundary.
+      Discuss nonuniform ranking and lack of paired intervals for ablations.'
+    Discussion:
+    - Explain what a positive mean fails to guarantee for individual queries. Separate observed patterns from hypotheses
+      about prediction error; derive cautious implications for context allocation. Do not claim measured answer quality,
+      compute savings, fairness or robustness on new batches.
+    Limitations:
+    - State fixed-batch conditional intervals; selected budget not preregistered; separately trained lexical FiQA is
+      a confounded boundary; no repeat model seeds or downstream evaluation.
+    Conclusion:
+    - Answer RQ1-RQ3 briefly without introducing new claims.
+    Appendix:
+    - Optional extended protocol after References. Main claims and negative results must stay in the body.
+  focus_terms:
+  - retriev
+  - rank
+  - quer
+  - budget
+  - benchmark
+  - fusion
+  - rag
+  - evidence
+  - search
+  - allocat
+  - adapt
+  - difficul
+  - depth
+  - beir
+  - verif
+  - scientific
   minimum_focus_terms: 2
-  min_references: 4
-  min_body_references: 4
+  min_references: 6
+  min_body_references: 6
   required_reference_topics:
-    - code: paper_direct_prior_missing
-      title_term_groups:
-        - [retriev]
-        - [allocat, adapt, depth]
-      minimum: 1
-      message: Cite and compare at least one verified prior study specifically about adaptive retrieval depth or retrieval budget.
-  required_sections: [Abstract, Introduction, Related Work, Method, Experimental Setup, Results, Limitations, Conclusion, References]
+  - code: paper_direct_prior_missing
+    title_term_groups:
+    - - retriev
+    - - allocat
+      - adapt
+      - depth
+    minimum: 1
+    message: Cite and compare at least one verified prior study specifically about adaptive retrieval depth or retrieval
+      budget.
+  required_sections:
+  - Abstract
+  - Introduction
+  - Related Work
+  - Method
+  - Experimental Setup
+  - Results
+  - Discussion
+  - Limitations
+  - Conclusion
+  - References
   method_requirements:
-    - Route B2 allocates document depth jointly across a known batch of queries after retriever rankings are fused; it does not allocate budget among retrievers or pathways.
-    - The budget counts documents admitted to evidence context. Every retriever already generates up to 100 candidates, so no retrieval-compute or latency saving was demonstrated.
-    - Fusion weights and recall curves use training qrels. Test qrels are used only to evaluate the frozen configuration and the explicitly labeled oracle reference.
-    - The headline result is the unweighted SciFact and NFCorpus macro mean at budget 5. FiQA is a separate lexical stress test, and generated-answer quality was not measured.
-    - The JiuwenSwarm Team run imports a previously completed Route B2 experiment artifact; do not claim that Team independently reran the full experiment.
-    - Predicted expected-recall values are real-valued, but allocated document depths are discrete integers. Do not describe document depth as a continuous function of the features.
-    - The calibration model is fitted on training queries and applied once per test query. Continuous means real-valued prediction rather than temporal or online updating.
-    - The primary supported claim is the two-dataset macro result; SciFact has an individually significant secondary result, while NFCorpus is inconclusive.
-    - In Results, add a separate budget-5 adaptive-baseline table for SciFact and NFCorpus with columns Dataset, Raw Jaccard, Binned calibration, and kNN allocation, using the exact required_adaptive_baseline_rows. These are measured descriptive comparisons; no confidence interval against these two adaptive baselines was computed.
-    - Give both Results tables substantive Agent-written captions immediately above them, labelled Table 1 and Table 2. Table 1 describes the primary comparison and paired intervals; Table 2 describes the descriptive adaptive-baseline recalls without intervals.
-    - In Results, report the existing five 80%-training-query subset resamples for SciFact and NFCorpus, including exact mean recall and population SD from required_train_subsampling_summary. Label this a limited training-subset sensitivity check, not five independent model or benchmark seeds and not an uncertainty interval for the primary comparison.
-    - The five 80%-training-query subsets were evaluated inside the previously completed experiment after ranking and fusion; the current Team imported that artifact. Do not say the full experiment or pipeline was rerun five times. The primary experiment/bootstrap used seed 42, while the training-subset draws used seeds 42 through 46.
-    - In the budget sweep, the largest candidate-minus-fixed gap is at budget 5 on SciFact and budget 2 on NFCorpus. Do not make a shared claim that both panels peak at intermediate depths.
-    - Explain that the rank-overlap-only feature ablation slightly exceeds the full feature model on SciFact, so the all-feature representation is not consistently best.
-    - Compare the method against a directly related verified adaptive retrieval-depth or retrieval-budget paper, explaining that Route B2 allocates document context jointly over a batch rather than routing each query independently.
-    - Budget 5 is the primary analysis budget in the supplied artifact. Do not claim that it was preregistered or pre-specified unless a timestamped protocol is supplied.
-    - Round displayed secondary results and confidence intervals to a consistent readable precision, while retaining exact values in the Structured References JSON block.
-    - Include a Markdown results table with rows for SciFact, NFCorpus, the unweighted two-dataset macro, and FiQA lexical stress test; use the exact required_results_table_rows values and show the paired-bootstrap 95% intervals.
-    - Embed the supplied budget-sweep figure once in Results as ![Evidence recall by budget](figures/recall_by_budget.pdf), and explain that panels use separate vertical scales and sweep points have no plotted confidence intervals.
-    - Explain the batch allocation objective and feasible integer depths, feature construction, training/test separation, k values, tuned fusion baseline, and feature ablation from the supplied artifact; do not infer unreported compute savings.
+  - Route B2 allocates document depth jointly across a known batch of queries after retriever rankings are fused; it
+    does not allocate budget among retrievers or pathways.
+  - The budget counts documents admitted to evidence context. Every retriever already generates up to 100 candidates,
+    so no retrieval-compute or latency saving was demonstrated.
+  - Fusion weights and recall curves use training qrels. Test qrels are used only to evaluate the frozen configuration
+    and the explicitly labeled oracle reference.
+  - The headline result is the unweighted SciFact and NFCorpus macro mean at budget 5. FiQA is a separately trained finance-domain
+    lexical evaluation, not a zero-shot transfer test, and generated-answer quality was not measured.
+  - The JiuwenSwarm Team run imports a previously completed Route B2 experiment artifact; do not claim that Team independently
+    reran the full experiment.
+  - Predicted expected-recall values are real-valued, but allocated document depths are discrete integers. Do not describe
+    document depth as a continuous function of the features.
+  - The calibration model is fitted on training queries and applied once per test query. Continuous means real-valued
+    prediction rather than temporal or online updating.
+  - The primary supported claim is the two-dataset macro result; SciFact has an individually significant secondary result,
+    while NFCorpus is inconclusive.
+  - In Results, add a separate budget-5 adaptive-baseline table for all datasets in required_adaptive_baseline_rows with
+    columns Dataset, Raw Jaccard, Binned calibration, and kNN allocation. These are measured descriptive comparisons;
+    no confidence interval against these two adaptive baselines was computed. Discuss any stronger competing baseline
+    on FiQA.
+  - 'Give the four Results tables substantive captions in appearance order: Table 1 primary paired comparison; Table
+    2 descriptive adaptive baselines in RQ1; Table 3 query outcomes in RQ2; Table 4 feature ablations in RQ3. No invented
+    uncertainty for descriptive comparisons.'
+  - Use required_feature_ablation_rows for Table 4 with columns Dataset, All features, Rank overlap, Jaccard only, RBO
+    only. Retain every supplied dataset and explain that the full model is not uniformly best. Define the feature subsets
+    from the implementation contract.
+  - In Results, report the existing five 80%-training-query subset resamples for SciFact and NFCorpus, including exact
+    mean recall and population SD from required_train_subsampling_summary. Label this a limited training-subset sensitivity
+    check, not five independent model or benchmark seeds and not an uncertainty interval for the primary comparison.
+  - The five 80%-training-query subsets were evaluated inside the previously completed experiment after ranking and fusion;
+    the current Team imported that artifact. Do not say the full experiment or pipeline was rerun five times. The primary
+    experiment/bootstrap used seed 42, while the training-subset draws used seeds 42 through 46.
+  - In the budget sweep, the largest candidate-minus-fixed gap is at budget 5 on SciFact and budget 2 on NFCorpus. Do
+    not make a shared claim that both panels peak at intermediate depths.
+  - Explain that the rank-overlap-only feature ablation slightly exceeds the full feature model on SciFact, so the all-feature
+    representation is not consistently best.
+  - Compare the method against a directly related verified adaptive retrieval-depth or retrieval-budget paper, explaining
+    that Route B2 allocates document context jointly over a batch rather than routing each query independently.
+  - Budget 5 is the primary analysis budget in the supplied artifact. Do not claim that it was preregistered or pre-specified
+    unless a timestamped protocol is supplied.
+  - Round displayed secondary results and confidence intervals to a consistent readable precision, while retaining exact
+    values in the audit-only Structured References JSON block; never refer to that hidden block or internal image paths
+    in public manuscript prose.
+  - Include a Markdown results table with rows for SciFact, NFCorpus, the unweighted two-dataset macro, and FiQA lexical
+    stress test; use the exact required_results_table_rows values and show the paired-bootstrap 95% intervals.
+  - Embed the supplied budget-sweep figure once in Results as ![Evidence recall by budget](figures/recall_by_budget.pdf),
+    and explain that panels use separate vertical scales and sweep points have no plotted confidence intervals.
+  - Embed the supplied three-dataset effect plot in Results as an image with a substantive Agent-written caption using
+    figures/budget_effect.pdf only as the Markdown image target. Explain that it shows candidate-minus-fixed-baseline
+    evidence recall for SciFact, NFCorpus, and separately trained lexical FiQA; every budget has pointwise paired-bootstrap
+    95% intervals. These condition on the realized batch allocation; they are not simultaneous intervals or uncertainty
+    for reallocating new batches. Do not claim budget 5 was preregistered.
+  - Feasible integer depths are 1 through 10; the budget is a batch average and individual query allocations differ.
+    Jaccard and RBO features are disagreements (1 minus overlap); rrf_margin is top-two RRF relative-margin uncertainty.
+    Training-subset sensitivity keeps fusion weights, scaler, and k fixed while restricting only the kNN reference set.
+  - Explain the batch allocation objective and feasible integer depths, feature construction, training/test separation,
+    k values, tuned fusion baseline, and feature ablation from the supplied artifact; do not infer unreported compute
+    savings.
+  - Begin the response with the paper title. Exclude delegation/status/agent orchestration messages from public prose.
+  - Answer the three supplied research questions in labelled RQ1, RQ2 and RQ3 Results subsections. Each should connect
+    the comparison, result and bounded interpretation.
+  - Embed figures/method_overview.pdf once in Method with a self-contained caption explaining training-only fitting,
+    frozen test inference and the changed integer allocation component.
+  - 'Embed figures/query_risk.pdf once in Results with a self-contained caption. This uses actual per-query saved outcomes:
+    contributions to mean recall and rescued/newly missed zero-recall events. It is descriptive fixed-allocation analysis,
+    not stochastic unreliability or causal evidence.'
+  - Add a captioned Table 3 with Dataset, Wins, Ties, Losses, Rescued, Newly missed; use the exact required_query_outcome_rows.
+    Wins/ties/losses count recall changes; rescued means baseline recall zero and candidate positive; newly missed is
+    the reverse.
+  - 'Explain that extra assigned capacity with unchanged recall is not proven waste: recall is only one outcome, documents
+    have variable length, and answer usefulness was not measured.'
+  - Budget-transition diagnostics are separately optimized allocations at two budgets, not chronological failures of
+    a deployed policy. Cite only measured entries supplied by query diagnostics.
+  - Do not place RQ/hypothesis metadata that changes the studied method (allocation across sources, linear extrapolation,
+    online routing). The scoped topic and method contract are authoritative.
+  - Appendix, when used, appears after References and before Structured References. Do not put internal Team details
+    or resource tokens in the retrieval-paper results; those belong in the technical report.
   required_patterns:
-    - code: paper_batch_scope_missing
-      pattern: '\b(batch|batchwise)\b'
-      message: State that the depth allocation is jointly optimized over a known batch of queries.
-    - code: paper_context_budget_missing
-      pattern: '\b(context|document depth|documents admitted)\b'
-      message: Define the budget as documents exposed to the evidence context, not retrieval computation.
-    - code: paper_discrete_depth_missing
-      pattern: '\b(integer|discrete)\b'
-      message: State that allocated document depths are integers, even though predicted recall values are real-valued.
+  - code: paper_batch_scope_missing
+    pattern: \b(batch|batchwise)\b
+    message: State that the depth allocation is jointly optimized over a known batch of queries.
+  - code: paper_context_budget_missing
+    pattern: \b(context|document depth|documents admitted)\b
+    message: Define the budget as documents exposed to the evidence context, not retrieval computation.
+  - code: paper_discrete_depth_missing
+    pattern: \b(integer|discrete)\b
+    message: State that allocated document depths are integers, even though predicted recall values are real-valued.
   forbidden_patterns:
-    - code: paper_pathway_allocation_claim
-      pattern: '(?:reallocat|allocat)[^.\n]{0,100}(?:pathways?|sub-quer(?:y|ies))'
-      message: Route B2 allocates document depth across queries after fusion; it does not allocate budget across retrieval pathways or sub-queries.
-    - code: paper_continuous_depth_claim
-      pattern: '(?:allocat(?:ed|ion)?\s+depth|document\s+depth)[^.\n]{0,100}\bcontinuous\s+function\b'
-      message: Document depth is an integer decision, not a continuous function of features; revise the method description.
-    - code: paper_temporal_calibration_claim
-      pattern: '\b(?:continuously\s+calibrat\w*|calibrat\w*\s+continuously)\b'
-      message: This experiment uses a fixed offline-fitted regressor to generate real-valued predictions; do not imply ongoing calibration during inference.
-    - code: paper_dataset_claim_conflict
-      pattern: '\bdo\s+not\s+extend\s+(?:it|the\s+(?:effect|claim))\s+to\s+any\s+individual\s+dataset\b'
-      message: SciFact is individually significant; state that the primary analysis claim is macro while SciFact is a secondary result.
-    - code: paper_unsupported_prespecification
-      pattern: '\b(?:pre[- ]specified|preregistered|pre[- ]registered)\s+(?:primary\s+)?budget\b'
-      message: The supplied artifact identifies a primary analysis budget but does not establish preregistration or prior specification.
-
+  - code: paper_pathway_allocation_claim
+    pattern: (?:reallocat|allocat)[^.\n]{0,100}(?:pathways?|sub-quer(?:y|ies))
+    message: Route B2 allocates document depth across queries after fusion; it does not allocate budget across retrieval
+      pathways or sub-queries.
+  - code: paper_continuous_depth_claim
+    pattern: (?:allocat(?:ed|ion)?\s+depth|document\s+depth)[^.\n]{0,100}\bcontinuous\s+function\b
+    message: Document depth is an integer decision, not a continuous function of features; revise the method description.
+  - code: paper_temporal_calibration_claim
+    pattern: \b(?:continuously\s+calibrat\w*|calibrat\w*\s+continuously)\b
+    message: This experiment uses a fixed offline-fitted regressor to generate real-valued predictions; do not imply
+      ongoing calibration during inference.
+  - code: paper_dataset_claim_conflict
+    pattern: \bdo\s+not\s+extend\s+(?:it|the\s+(?:effect|claim))\s+to\s+any\s+individual\s+dataset\b
+    message: SciFact is individually significant; state that the primary analysis claim is macro while SciFact is a secondary
+      result.
+  - code: paper_unsupported_prespecification
+    pattern: \b(?:pre[- ]specified|preregistered|pre[- ]registered)\s+(?:primary\s+)?budget\b
+    message: The supplied artifact identifies a primary analysis budget but does not establish preregistration or prior
+      specification.
+  require_research_narrative: true
+  require_query_outcome_table: true
 budget:
-  # Team agents may emit long reasoning traces even when their structured answer
-  # is compact. Keep the audit hard limit high enough for draft + gate/revision.
-  # Actual usage is still recorded in resource_usage.json and resource_report.md.
-  # Native Team usage includes every internal leader/member ReAct call. The
-  # per-agent iteration caps below prevent runaway loops; this remains a hard
-  # whole-run guard for a complete draft + audit/revision pass.
-  # This is a local runaway guard, not a competition hard limit. The contest
-  # scores resource efficiency and requires reporting actual usage. A complete
-  # Team draft plus reviewer and one repair can exceed two million tokens.
-  max_total_tokens: 8000000
+  max_total_tokens: 6000000
   max_model_calls: 12
   estimated_cost_per_1k_tokens: 0.0
   max_estimated_cost: 0.0
-
 debug:
-  stop_after_stage: ""
+  stop_after_stage: ''
   force_persistent_gate_failure: false
-
 modes:
   team:
     scitrace_phase4:
@@ -167,9 +347,9 @@ modes:
         enabled: true
         version_control: false
         artifact_dirs:
-          - evidence
-          - experiments
-          - handoffs
+        - evidence
+        - experiments
+        - handoffs
       leader:
         member_name: research_leader
         display_name: Research Leader
@@ -178,27 +358,28 @@ modes:
       agents:
         leader:
           max_iterations: 8
-          completion_timeout: 780.0
+          completion_timeout: 1500.0
         teammate:
           max_iterations: 6
-          completion_timeout: 780.0
+          completion_timeout: 1500.0
       predefined_members:
-        - member_name: literature_ideation_agent
-          display_name: Literature & Ideation Agent
-          name: Literature & Ideation Agent
-          persona: Investigate literature, frame the research question, and propose hypotheses without inventing citations or metrics.
-        - member_name: experiment_agent
-          display_name: Experiment Agent
-          name: Experiment Agent
-          persona: Own experiment planning and implementation notes, but do not fabricate execution results.
-        - member_name: writer_agent
-          display_name: Writer Agent
-          name: Writer Agent
-          persona: Write and revise the paper using only validated claims, citations, and experiment numbers.
-        - member_name: auditor_agent
-          display_name: Auditor Agent
-          name: Auditor Agent
-          persona: Review the draft and emit structured findings only; never edit the paper directly.
+      - member_name: literature_ideation_agent
+        display_name: Literature & Ideation Agent
+        name: Literature & Ideation Agent
+        persona: Investigate literature, frame the research question, and propose hypotheses without inventing citations
+          or metrics.
+      - member_name: experiment_agent
+        display_name: Experiment Agent
+        name: Experiment Agent
+        persona: Own experiment planning and implementation notes, but do not fabricate execution results.
+      - member_name: writer_agent
+        display_name: Writer Agent
+        name: Writer Agent
+        persona: Write and revise the paper using only validated claims, citations, and experiment numbers.
+      - member_name: auditor_agent
+        display_name: Auditor Agent
+        name: Auditor Agent
+        persona: Review the draft and emit structured findings only; never edit the paper directly.
       storage:
         type: sqlite
         params:

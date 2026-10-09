@@ -9,6 +9,9 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
+from .method_contract import audit_method_contract
+from .paper_narrative import audit_narrative, has_substantive_figure_caption
+
 
 def focus_matches(title: str, summary: str, terms: Iterable[str]) -> list[str]:
     """Return the configured topical stems present in title or abstract.
@@ -50,6 +53,7 @@ def select_literature(
     max_results: int,
     priority_title_term_groups: list[list[str]] | None = None,
     minimum_priority_results: int = 0,
+    reserved_title_phrases: list[str] | None = None,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     """Deduplicate and rank verified provider results with a replayable audit."""
     best: dict[str, tuple[int, int, Any, bool]] = {}
@@ -80,6 +84,15 @@ def select_literature(
     ranked = sorted(best.values(), key=lambda entry: (-entry[0], entry[1]))
     priority_entries = [entry for entry in ranked if entry[3]][:max(0, minimum_priority_results)]
     selected_entries = list(priority_entries)
+    # Exact normalized phrases keep foundational benchmark/method references
+    # from being displaced by many high-scoring, near-duplicate recent papers.
+    # Selection still requires a real retrieved candidate that passed focus.
+    for phrase in reserved_title_phrases or []:
+        tokens = re.findall(r"\w+", phrase.casefold())
+        entry = next((entry for entry in ranked if tokens and " ".join(tokens) in
+                      " ".join(re.findall(r"\w+", entry[2].title.casefold()))), None)
+        if entry is not None and entry not in selected_entries and len(selected_entries) < max_results:
+            selected_entries.append(entry)
     for entry in ranked:
         if len(selected_entries) >= max_results:
             break
@@ -93,6 +106,148 @@ def _error(code: str, message: str, node_id: str = "") -> dict[str, str]:
     return {"code": code, "message": message, "node_id": node_id, "severity": "error"}
 
 
+def _public_manuscript(draft: str) -> str:
+    """Keep audit-only JSON out of every manuscript completeness check."""
+    return re.split(
+        r"^#{1,4}\s+(?:\d+(?:\.\d+)*[.)]?\s+)?Structured References\s*$",
+        draft, maxsplit=1, flags=re.IGNORECASE | re.MULTILINE,
+    )[0]
+
+
+def _section_texts(draft: str) -> dict[str, str]:
+    # A section includes its subsections, but ends before a sibling/parent.
+    normalized = re.sub(r"^\*\*Abstract\*\*\s*$", "## Abstract", draft,
+                        flags=re.IGNORECASE | re.MULTILINE)
+    matches = list(re.finditer(r"(?m)^(?P<marks>#{1,4})\s+(?P<title>.+?)\s*$", normalized))
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        title = re.sub(r"^\d+(?:\.\d+)*[.)]?\s+", "", match.group("title")).casefold()
+        end = next((other.start() for other in matches[index + 1:]
+                    if len(other.group("marks")) <= len(match.group("marks"))), len(normalized))
+        sections[title] = normalized[match.end():end]
+    return sections
+
+
+def _prose_word_count(text: str) -> int:
+    """Count explanatory prose, not numeric tables, figure captions or metadata."""
+    text = re.sub(r"```.*?```|~~~.*?~~~", "", text, flags=re.DOTALL)
+    text = re.sub(r"(?m)^\s*(?:\|.*|#{1,6}\s+.*)$", "", text)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    text = "\n\n".join(paragraph for paragraph in re.split(r"\n\s*\n", text)
+                       if not re.match(r"\s*(?:\*\*)?(?:Figure|Table)\s+\d+\s*[:.]", paragraph,
+                                       flags=re.IGNORECASE))
+    text = re.sub(r"\[[^\]]*\]\((?:https?://)?[^)]*\)", "", text)
+    text = re.sub(r"\b(?:evidence|claim|artifact|rq|hyp)_[\w]+\b|https?://\S+", "", text)
+    text = re.sub(r"\$\$.*?\$\$|\\\[.*?\\\]", "", text, flags=re.DOTALL)
+    return len(re.findall(r"\b[A-Za-z]+(?:[-'][A-Za-z]+)*\b", text))
+
+
+def _dataset_label_matches(dataset: str, label: str) -> bool:
+    """Allow a descriptive qualifier without mistaking another dataset for it."""
+    if dataset.casefold() in label.casefold():
+        return True
+    if re.sub(r"[^a-z0-9]+", "_", dataset.casefold()).strip("_") == label.casefold().strip():
+        return True
+    return (dataset.casefold() == "fiqa (lexical)"
+            and re.search(r"\bfiqa\b", label, re.IGNORECASE) is not None
+            and re.search(r"\blexical\b", label, re.IGNORECASE) is not None)
+
+
+def feature_ablation_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expose measured ablation recalls to both writer and acceptance gate.
+
+    No paper result is embedded in this requirement: a changed experiment gives
+    the writer a changed table and is checked against that same artifact.
+    """
+    rows = []
+    labels = {"scifact": "SciFact", "nfcorpus": "NFCorpus", "fiqa": "FiQA (lexical)",
+              "fiqa_lexical": "FiQA (lexical)"}
+    for group in ("datasets", "boundary_results"):
+        for name, data in (results.get(group) or {}).items():
+            ablation = data.get("feature_ablation") or {}
+            if not ablation:
+                continue
+            row: dict[str, Any] = {"dataset": labels.get(name.casefold(), name)}
+            for feature in ("all_features", "rank_overlap", "jaccard_only", "rbo_only"):
+                if isinstance(ablation.get(feature), dict) and "recall" in ablation[feature]:
+                    row[feature] = float(ablation[feature]["recall"])
+            rows.append(row)
+    return rows
+
+
+def _audit_feature_ablation(results_text: str, results: dict[str, Any]) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    expected_rows = feature_ablation_rows(results)
+    features = ("all_features", "rank_overlap", "jaccard_only", "rbo_only")
+    if not expected_rows or any(not all(key in row for key in features) for row in expected_rows):
+        return [_error("paper_feature_ablation_evidence_missing",
+                       "The required feature ablation has no complete measured artifact; provide experimental evidence before writing its table.")]
+    ablation_table = None
+    for match in re.finditer(
+        r"(?m)^\|[^\n]+\|\s*\n\|[\s:|\-]+\|\s*\n(?P<rows>(?:\|[^\n]+\|\s*\n?)+)", results_text,
+    ):
+        headers = [re.sub(r"[-_]", " ", cell.strip().casefold())
+                   for cell in match.group().splitlines()[0].strip("|").split("|")]
+        indices = {key: next((i for i, header in enumerate(headers)
+                              if all(term in header for term in terms)), None)
+                   for key, terms in {"all_features": ("feature",), "rank_overlap": ("rank", "overlap"),
+                                      "jaccard_only": ("jaccard",), "rbo_only": ("rbo",)}.items()}
+        if all(index is not None for index in indices.values()) and len(set(indices.values())) == 4:
+            ablation_table = (match, indices)
+            break
+    if ablation_table is None:
+        return [_error("paper_feature_ablation_table_missing",
+                       "Add a Results table with Dataset, All features, Rank overlap, Jaccard only, and RBO only using measured feature_ablation recalls.")]
+    match, indices = ablation_table
+    rows = [line.strip().strip("|").split("|") for line in match.group("rows").splitlines() if line.strip()]
+    for expected in expected_rows:
+        dataset = expected["dataset"]
+        row = next((cells for cells in rows if cells and _dataset_label_matches(dataset, cells[0])), None)
+        if row is None:
+            errors.append(_error("paper_feature_ablation_row_missing", f"Add the measured {dataset} feature-ablation row."))
+            continue
+        for key in features:
+            index = indices[key]
+            cell = row[index] if index is not None and index < len(row) else ""
+            numbers = re.findall(r"(?<![\w.])[-+]?\d*\.\d+", cell)
+            if len(numbers) != 1 or abs(float(numbers[0]) - expected[key]) > 0.00006:
+                errors.append(_error("paper_feature_ablation_value_mismatch",
+                                     f"The {dataset} {key} recall must match the measured value {expected[key]:.6f}."))
+    return errors
+
+
+def _audit_query_outcomes(draft: str, diagnostics: dict | None) -> list[dict]:
+    if not diagnostics or not diagnostics.get("summaries"):
+        return [_error("paper_query_evidence_missing", "Verified per-query outcomes are required before accepting the diagnostic table.")]
+    table = None
+    indices = {}
+    for match in re.finditer(r"(?m)^\|[^\n]+\|\s*\n\|[\s:|\-]+\|\s*\n(?P<rows>(?:\|[^\n]+\|\s*\n?)+)", draft):
+        headers = [cell.strip().casefold() for cell in match.group().splitlines()[0].strip("|").split("|")]
+        names = {"wins": "win", "ties": "tie", "losses": "loss", "rescued_from_no_evidence": "rescue", "newly_no_evidence": "newly"}
+        candidate = {key: next((i for i, header in enumerate(headers) if name in header), None) for key, name in names.items()}
+        if all(i is not None for i in candidate.values()) and len(set(candidate.values())) == len(names):
+            table, indices = match, candidate
+            break
+    if table is None:
+        return [_error("paper_query_outcome_table_missing", "Add Table 3: Dataset, Wins, Ties, Losses, Rescued, Newly missed using exact required_query_outcome_rows.")]
+    rows = [line.strip().strip("|").split("|") for line in table.group("rows").splitlines() if line.strip()]
+    errors = []
+    labels = {"scifact": "SciFact", "nfcorpus": "NFCorpus", "fiqa_lexical": "FiQA (lexical)"}
+    for expected in diagnostics["summaries"]:
+        if expected["budget"] != diagnostics["primary_budget"]:
+            continue
+        label = labels[expected["dataset"]]
+        row = next((cells for cells in rows if cells and _dataset_label_matches(label, cells[0])), None)
+        if row is None:
+            errors.append(_error("paper_query_outcome_row_missing", f"Include the measured {label} query outcomes at the primary budget."))
+            continue
+        for key, index in indices.items():
+            values = re.findall(r"(?<![\w.])\d+(?![\w.])", row[index] if index < len(row) else "")
+            if len(values) != 1 or int(values[0]) != expected[key]:
+                errors.append(_error("paper_query_outcome_count_mismatch", f"{label} {key} must match the verified count {expected[key]}."))
+    return errors
+
+
 def audit_draft(
     draft: str,
     *,
@@ -102,36 +257,53 @@ def audit_draft(
     adaptive_rows: list[dict[str, Any]] | None = None,
     stability_rows: list[dict[str, Any]] | None = None,
     results: dict[str, Any] | None = None,
+    query_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Check review-critical structure, literature relevance, and method scope."""
     if not bool(config.get("enabled", False)):
         return {"ok": True, "error_count": 0, "errors": [], "enabled": False}
     errors: list[dict[str, str]] = []
+    public_draft = _public_manuscript(draft)
+    if config.get("require_research_narrative"):
+        errors.extend(audit_narrative(public_draft))
+    if config.get("require_query_outcome_table"):
+        errors.extend(_audit_query_outcomes(public_draft, query_diagnostics))
+    if config.get("validate_typesetting"):
+        # Parse only: no TeX process or generated file. Let the Writer repair
+        # unsupported equations/images during the review loop, before export.
+        from ..paper_export import draft_tex
+
+        try:
+            draft_tex(draft)
+        except ValueError as exc:
+            errors.append(_error(
+                "paper_typesetting_invalid",
+                f"Repair manuscript markup before PDF export: {exc}. Use supported inline or standalone display math and verified figure paths.",
+            ))
     required_sections = [str(x) for x in config.get("required_sections", [])]
     headings = [
         re.sub(r"^\d+(?:\.\d+)*[.)]?\s+", "", line.strip()).casefold()
-        for line in re.findall(r"^#{1,4}\s+(.+)$", draft, flags=re.MULTILINE)
+        for line in re.findall(r"^#{1,4}\s+(.+)$", public_draft, flags=re.MULTILINE)
     ]
-    if re.search(r"^\*\*Abstract\*\*", draft, flags=re.IGNORECASE | re.MULTILINE):
+    if re.search(r"^\*\*Abstract\*\*", public_draft, flags=re.IGNORECASE | re.MULTILINE):
         headings.append("abstract")
     for section in required_sections:
         if not any(section.casefold() == heading for heading in headings):
             errors.append(_error("paper_section_missing", f"Add a substantive {section} section."))
 
-    public_draft = draft.split("## Structured References", 1)[0]
-    results_heading = re.search(
-        r"(?m)^(?P<marks>#{1,4})\s+(?:\d+(?:\.\d+)*[.)]?\s+)?Results\s*$",
-        public_draft,
-    )
-    results_text = ""
-    if results_heading:
-        tail = public_draft[results_heading.end():]
-        end = len(tail)
-        for heading in re.finditer(r"(?m)^(?P<marks>#{1,4})\s+", tail):
-            if len(heading.group("marks")) <= len(results_heading.group("marks")):
-                end = heading.start()
-                break
-        results_text = tail[:end]
+    section_texts = _section_texts(public_draft)
+    section_word_counts = {section: _prose_word_count(text) for section, text in section_texts.items()
+                           if section != "references"}
+    for section, minimum in (config.get("minimum_section_words") or {}).items():
+        actual = section_word_counts.get(str(section).casefold(), 0)
+        if actual < int(minimum):
+            errors.append(_error(
+                "paper_section_underdeveloped",
+                f"{section} has {actual} prose words (minimum {int(minimum)}). Explain the verified method, protocol or findings in this section; tables, image captions, references and audit metadata do not satisfy this requirement.",
+            ))
+    if config.get("require_route_b2_method_contract"):
+        errors.extend(audit_method_contract(public_draft))
+    results_text = section_texts.get("results", "")
     if config.get("require_results_table"):
         table_match = re.search(
             r"(?m)^\|[^\n]+\|\s*\n\|[\s:|\-]+\|\s*\n(?P<rows>(?:\|[^\n]+\|\s*\n?)+)",
@@ -147,7 +319,9 @@ def audit_draft(
             rows = [line.strip("|").split("|") for line in table_match.group("rows").splitlines() if line.strip()]
             for expected in table_rows or []:
                 dataset = str(expected["dataset"])
-                row = next((cells for cells in rows if cells and dataset.casefold() in cells[0].casefold()), None)
+                def _row_matches(cells: list[str]) -> bool:
+                    return bool(cells) and _dataset_label_matches(dataset, cells[0])
+                row = next((cells for cells in rows if _row_matches(cells)), None)
                 if row is None:
                     errors.append(_error("paper_results_table_row_missing", f"Add the {dataset} row to the results table."))
                     continue
@@ -160,12 +334,25 @@ def audit_draft(
         r"!\[[^\]\n]+\]\(figures/recall_by_budget\.pdf\)", results_text
     ):
         errors.append(_error("paper_results_figure_missing", "Embed the verified budget-sweep figure in Results using figures/recall_by_budget.pdf."))
+    if config.get("require_budget_effect_figure") and not has_substantive_figure_caption(
+        results_text, "budget_effect.pdf"
+    ):
+        errors.append(_error("paper_budget_effect_figure_missing", "Embed figures/budget_effect.pdf in Results with a substantive Agent-written caption describing the three datasets and pointwise intervals at every budget."))
     if config.get("require_table_captions"):
         tables = list(re.finditer(r"(?m)^\|[^\n]+\|\s*\n\|[\s:|\-]+\|", results_text))
-        for index, table in enumerate(tables[:2], start=1):
-            preceding = results_text[max(0, table.start() - 240):table.start()]
-            if not re.search(rf"\bTable\s+{index}\s*:\s*[^\n]+", preceding, flags=re.IGNORECASE):
+        for index, table in enumerate(tables, start=1):
+            # Match the complete immediately preceding paragraph. Captions may
+            # be long and use either "Table 1:" or "Table 1." in ICLR prose.
+            preceding = results_text[:table.start()].rstrip().split("\n\n")[-1].strip()
+            caption = re.match(
+                rf"(?:\*\*)?Table\s+{index}\s*[:.]\s*(?:\*\*)?\s*(?P<body>.+)",
+                preceding.lstrip("*_ "),
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if caption is None or len(re.sub(r"\W+", "", caption.group("body"))) < 20:
                 errors.append(_error("paper_results_table_caption_missing", f"Place an Agent-written Table {index} caption immediately above its Results table."))
+    if config.get("require_feature_ablation_table"):
+        errors.extend(_audit_feature_ablation(results_text, results or {}))
     if config.get("require_adaptive_baseline_table"):
         adaptive_table = next((match for match in re.finditer(
             r"(?m)^\|[^\n]+\|\s*\n\|[\s:|\-]+\|\s*\n(?P<rows>(?:\|[^\n]+\|\s*\n?)+)",
@@ -177,7 +364,7 @@ def audit_draft(
             rows = [line.strip("|").split("|") for line in adaptive_table.group("rows").splitlines() if line.strip()]
             for expected in adaptive_rows or []:
                 dataset = str(expected["dataset"])
-                row = next((cells for cells in rows if cells and dataset.casefold() in cells[0].casefold()), None)
+                row = next((cells for cells in rows if cells and _dataset_label_matches(dataset, cells[0])), None)
                 if row is None:
                     errors.append(_error("paper_adaptive_baseline_row_missing", f"Add the {dataset} adaptive-baseline row."))
                     continue
@@ -364,4 +551,4 @@ def audit_draft(
                 str(rule.get("message") or "State the experiment scope and limits explicitly."),
             ))
     return {"ok": not errors, "error_count": len(errors), "errors": errors, "enabled": True,
-            "reference_count": len(cited_ids)}
+            "reference_count": len(cited_ids), "section_word_counts": section_word_counts}

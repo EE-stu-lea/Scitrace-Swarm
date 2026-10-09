@@ -50,8 +50,14 @@ from jiuwenswarm.agents.harness.research.rails import (
 from jiuwenswarm.agents.harness.research.run_store import ResearchRunStore, utc_now_iso
 from jiuwenswarm.agents.harness.research.runtime import ResearchStageHarness, build_runtime
 
-from .paper_quality import audit_draft, select_literature, title_covers_groups
+from .paper_quality import audit_draft, feature_ablation_rows, select_literature, title_covers_groups
+from .method_contract import ROUTE_B2_METHOD_CONTRACT
 from .result_figures import write_budget_curve
+from .budget_effect_figure import render_budget_effect_figure, FIGURE_PATH as EFFECT_FIGURE_PATH
+from .result_rows import _primary_results_table_rows, _adaptive_baseline_rows, _train_subsampling_rows
+from .paper_narrative import narrative_context
+from .method_overview import render_method_overview
+from .query_diagnostics import build_query_diagnostics, render_query_diagnostics
 
 
 class WorkflowInterrupted(RuntimeError):
@@ -163,6 +169,11 @@ def run_pipeline(
                 "template_id": str(team_config.get("template_id") or "scitrace_phase4"),
                 "session_id": f"scitrace-team-{output_root.name}",
                 "shared_run_root": str(output_root),
+                "direct_specialist_stages": list(team_config.get("direct_specialist_stages") or []),
+                "execution_note": (
+                    "Configured specialist stages use one native openJiuwen model request per "
+                    "attempt; other model stages use native Team streaming."
+                ),
                 "roles": [
                     "research_leader",
                     "literature_ideation_agent",
@@ -269,7 +280,7 @@ def run_pipeline(
             run_store,
             "topic_intake",
             resume=resume,
-            compute=lambda: _run_topic_intake(topic, harness, provenance),
+            compute=lambda: _run_topic_intake(topic, harness, provenance, config=config),
         )
         _enforce_runtime_budget(config, runtime, stage=current_stage, call_log_path=model_calls_path)
         _maybe_interrupt(debug, current_stage)
@@ -425,6 +436,18 @@ def run_pipeline(
             retries=_count_failed_model_call_records(model_calls_path),
             model_name=str(runtime_info.get("model_name") or ""),
         )
+        # A resumed process may have no prior resource_usage.json when the
+        # first process was interrupted in a stage. Report the traceable
+        # first-start-to-finalization wall time rather than just this process.
+        run_start = datetime.fromisoformat(str(manifest["start_time"]))
+        elapsed_wall = max(0.0, (datetime.now(timezone.utc) - run_start).total_seconds())
+        resource_snapshot.total_runtime_seconds = max(
+            resource_snapshot.total_runtime_seconds, elapsed_wall
+        )
+        resource_snapshot.extra["runtime_accounting"] = (
+            "elapsed wall time from run_manifest.start_time; includes any resume gap"
+            if resume else "elapsed wall time from run_manifest.start_time"
+        )
         if budget_overrun:
             resource_snapshot.extra["budget_overrun"] = budget_overrun
         resource_reporter = ResourceReporter(
@@ -479,6 +502,39 @@ def run_pipeline(
                     status="failed",
                     payload={"error": sanitize_text(exc)},
                 )
+        # A failed run still needs a traceable resource report. Use durable
+        # model-call records so a resumed process includes prior paid usage;
+        # never let telemetry replace the stage's original exception.
+        try:
+            usage_summary = _durable_usage_summary(model_calls_path, runtime)
+            workflow_calls = _count_model_call_records(model_calls_path, include_diagnostics=False)
+            diagnostic_calls = _count_model_call_records(model_calls_path, include_diagnostics=True) - workflow_calls
+            _fill_resource_snapshot(
+                resource_snapshot, usage_summary=usage_summary, topic=topic,
+                claim_count=0, evidence_count=0, artifact_count=0,
+                started=started, workflow_model_calls=workflow_calls,
+                diagnostic_model_calls=max(0, diagnostic_calls),
+                retries=_count_failed_model_call_records(model_calls_path),
+                model_name=str(runtime_info.get("model_name") or ""),
+            )
+            resource_snapshot.total_runtime_seconds = previous_runtime_seconds + (time.perf_counter() - started)
+            for incomplete_count in ("claim_count", "evidence_count", "artifact_count"):
+                resource_snapshot.extra.pop(incomplete_count, None)
+            resource_snapshot.extra.update({
+                "run_status": "failed", "failure_stage": current_stage,
+                "partial_report": True,
+            })
+            ResourceReporter(
+                output_root, json_filename="resource_usage.json",
+                markdown_filename="resource_report.md", nest_by_session=False,
+            ).write_snapshot(resource_snapshot)
+        except Exception as report_error:
+            try:
+                run_store.append_audit_event("resource_report_write_failed", {
+                    "error_type": type(report_error).__name__,
+                })
+            except OSError:
+                pass
         manifest["status"] = "failed"
         manifest["failure_stage"] = current_stage
         manifest["mock_fallback_used"] = bool(manifest["mock_fallback_used"] or harness.claim_fallback_used)
@@ -496,8 +552,12 @@ def _run_topic_intake(
     topic: str,
     harness: ResearchStageHarness,
     provenance: ScientificProvenanceRail,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    brief = harness.generate_research_brief(topic=topic)
+    scope = ({"implementation_contract": ROUTE_B2_METHOD_CONTRACT, **narrative_context()}
+             if _config_section(config or {}, "paper_quality").get("require_research_narrative") else None)
+    brief = (harness.generate_research_brief(topic=topic, research_scope=scope) if scope else
+             harness.generate_research_brief(topic=topic))
     research_question = ResearchQuestion(text=str(brief.get("research_question") or topic).strip())
     hypothesis = Hypothesis(text=str(brief.get("hypothesis") or "").strip() or topic)
     provenance.record_node(research_question, session_id="")
@@ -569,6 +629,7 @@ def _run_literature_research(
         max_results=int(literature_cfg.get("max_results", 5) or 5),
         priority_title_term_groups=literature_cfg.get("priority_title_term_groups") or [],
         minimum_priority_results=int(literature_cfg.get("minimum_priority_results", 0) or 0),
+        reserved_title_phrases=literature_cfg.get("reserved_title_phrases") or [],
     )
     min_results = int(literature_cfg.get("min_relevant_results", 0) or 0)
     selection_path = evidence_dir / "literature_selection.json"
@@ -855,79 +916,6 @@ def _paper_results_view(results: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _primary_results_table_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
-    """Give the Writer exact values for a compact, auditable main-results table."""
-    rows = []
-    for dataset, label in (("scifact", "SciFact"), ("nfcorpus", "NFCorpus")):
-        comparison = results["datasets"][dataset]["primary_comparison"]
-        interval = comparison["paired_bootstrap"]
-        rows.append({
-            "dataset": label,
-            "candidate": comparison["candidate_recall"],
-            "fixed_baseline": comparison["baseline_recall"],
-            "difference": comparison["absolute_difference"],
-            "ci95": [interval["ci95_low"], interval["ci95_high"]],
-        })
-    comparison = results["primary_comparison"]
-    interval = comparison["stratified_paired_bootstrap"]
-    rows.append({
-        "dataset": "Macro",
-        "candidate": comparison["candidate_macro_recall"],
-        "fixed_baseline": comparison["baseline_macro_recall"],
-        "difference": comparison["absolute_difference"],
-        "ci95": [interval["ci95_low"], interval["ci95_high"]],
-    })
-    boundary = (results.get("boundary_results") or {}).get("fiqa_lexical")
-    if boundary:
-        comparison = boundary["primary_comparison"]
-        interval = comparison["paired_bootstrap"]
-        rows.append({
-            "dataset": "FiQA (lexical)",
-            "candidate": comparison["candidate_recall"],
-            "fixed_baseline": comparison["baseline_recall"],
-            "difference": comparison["absolute_difference"],
-            "ci95": [interval["ci95_low"], interval["ci95_high"]],
-        })
-    return rows
-
-
-def _adaptive_baseline_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
-    """Measured allocation baselines at the preselected primary budget."""
-    rows = []
-    for dataset, label in (("scifact", "SciFact"), ("nfcorpus", "NFCorpus")):
-        data = results["datasets"][dataset]
-        primary = str(data["primary_budget"])
-        methods = data["methods_by_budget"][primary]
-        rows.append({
-            "dataset": label,
-            "raw_jaccard": methods["raw_jaccard_allocation"]["recall"],
-            "binned_calibration": methods["binned_calibration"]["recall"],
-            "knn_calibration": methods["knn_calibration"]["recall"],
-        })
-    return rows
-
-
-def _train_subsampling_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
-    """Summarize existing 80% train-query resamples without implying new seeds."""
-    rows = []
-    for dataset, label in (("scifact", "SciFact"), ("nfcorpus", "NFCorpus")):
-        stability = results["datasets"][dataset]["train_subsampling_stability"]
-        runs = stability["runs"]
-        recalls = [float(item["recall"]) for item in runs]
-        rows.append({
-            "dataset": label,
-            "resamples": len(runs),
-            "training_fraction": 0.8,
-            "training_queries_per_resample": runs[0]["train_queries"],
-            "mean_recall": stability["recall_mean"],
-            "population_sd": stability["recall_std"],
-            "min_recall": min(recalls),
-            "max_recall": max(recalls),
-            "seeds": [item["seed"] for item in runs],
-        })
-    return rows
-
-
 def _run_draft_generate(
     *,
     topic: str,
@@ -947,11 +935,23 @@ def _run_draft_generate(
         write_budget_curve(results, output_root)
         if bool(quality_cfg.get("require_results_figure", False)) else None
     )
+    effect_figure = (
+        render_budget_effect_figure(output_root, output_root / "figures")
+        if bool(quality_cfg.get("require_budget_effect_figure", False)) else None
+    )
+    if quality_cfg.get("require_budget_effect_figure") and effect_figure is None:
+        raise ValueError("The verified Route B2 budget-effect figure cannot be built")
+    if quality_cfg.get("require_research_narrative"):
+        render_method_overview(output_root)
+        render_query_diagnostics(output_root / "experiments" / "route_b2_artifacts", output_root / "figures")
     table_rows = _primary_results_table_rows(results) if bool(quality_cfg.get("require_results_table", False)) else []
     adaptive_rows = _adaptive_baseline_rows(results) if bool(quality_cfg.get("require_adaptive_baseline_table", False)) else []
     stability_rows = _train_subsampling_rows(results) if bool(quality_cfg.get("require_train_subsampling_summary", False)) else []
+    manuscript_context = _manuscript_context(config, literature_payload, execution_payload, claim_payload, output_root)
+    _write_json(output_root / "manuscript_context.json", manuscript_context)
+    harness.set_manuscript_context(manuscript_context)
     prompt = json.dumps(
-        {
+        manuscript_context | {
             "topic": topic,
             "research_question": research_question_payload["research_question"],
             "hypothesis": research_question_payload["hypothesis"],
@@ -962,15 +962,76 @@ def _run_draft_generate(
             "required_adaptive_baseline_rows": adaptive_rows,
             "required_train_subsampling_summary": stability_rows,
             "result_figure": figure_manifest,
+            "budget_effect_figure": {
+                "path": EFFECT_FIGURE_PATH,
+                "data_path": "figures/budget_effect_data.json",
+                "source_sha256": effect_figure["sources"],
+                "caption_requirement": "Describe change in evidence recall for SciFact, NFCorpus, and separately trained finance-domain lexical FiQA. Pointwise paired-bootstrap intervals appear at every budget; they condition on realized allocations and are not simultaneous intervals or zero-shot transfer results.",
+            } if effect_figure else None,
             "claims": claim_payload["claims"],
             "stage_context": context_bundle,
             "paper_requirements": quality_cfg.get("method_requirements", []),
+            "implementation_contract": ROUTE_B2_METHOD_CONTRACT if quality_cfg.get("require_route_b2_method_contract") else None,
         },
         ensure_ascii=False,
         sort_keys=True,
     )
     draft = harness.write_draft(prompt=prompt)
     return {"draft": draft, "stage_context": context_bundle, "result_figure": figure_manifest}
+
+
+def _manuscript_context(config, literature_payload, execution_payload, claim_payload, output_root=None) -> dict[str, Any]:
+    """Share compact, verified evidence with all authoring stages, including resume."""
+    quality = _config_section(config, "paper_quality")
+    results = execution_payload["results"]
+    narrative = {}
+    if quality.get("require_research_narrative"):
+        if output_root is None:
+            raise ValueError("The final manuscript requires its verified per-query artifact directory")
+        diagnostics = build_query_diagnostics(Path(output_root) / "experiments" / "route_b2_artifacts")
+        narrative = narrative_context() | {
+            "query_diagnostics": {"primary_budget": diagnostics["primary_budget"],
+                "summaries": [row for row in diagnostics["summaries"] if row["budget"] == diagnostics["primary_budget"]],
+                "limitations": diagnostics["limitations"],
+                "budget_transitions": [{key: value for key, value in row.items() if key != "regression_query_ids"}
+                                       for row in diagnostics["budget_transitions"]]},
+            "required_query_outcome_rows": query_outcome_rows(diagnostics),
+            "method_figure": "figures/method_overview.pdf",
+            "query_risk_figure": "figures/query_risk.pdf",
+        }
+    return narrative | {
+        "results": _paper_results_view(results),
+        "artifact": execution_payload.get("artifact", {}),
+        "evidence": literature_payload["evidence"],
+        "claims": claim_payload["claims"],
+        "paper_requirements": quality.get("method_requirements", []),
+        "manuscript_plan": quality.get("manuscript_plan", {}),
+        "minimum_section_words": quality.get("minimum_section_words", {}),
+        "implementation_contract": ROUTE_B2_METHOD_CONTRACT
+        if quality.get("require_route_b2_method_contract") else None,
+        "required_results_table_rows": _primary_results_table_rows(results)
+        if quality.get("require_results_table") else [],
+        "required_adaptive_baseline_rows": _adaptive_baseline_rows(results)
+        if quality.get("require_adaptive_baseline_table") else [],
+        "required_train_subsampling_summary": _train_subsampling_rows(results)
+        if quality.get("require_train_subsampling_summary") else [],
+        "required_feature_ablation_rows": feature_ablation_rows(results)
+        if quality.get("require_feature_ablation_table") else [],
+    }
+
+
+def query_outcome_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{key: row[key] for key in ("dataset", "queries", "wins", "ties", "losses",
+             "rescued_from_no_evidence", "newly_no_evidence")}
+            for row in diagnostics["summaries"] if row["budget"] == diagnostics["primary_budget"]]
+
+
+def _review_errors(review: dict[str, Any]) -> list[dict[str, str]]:
+    return [{
+        "code": "paper_reviewer_finding", "severity": "error", "node_id": "",
+        "message": f"{finding['section']}: {finding['message']} Fix: {finding['suggested_fix']}",
+        "quote": finding["quote"],
+    } for finding in review.get("findings", []) if str(finding.get("severity", "")).lower() == "error"]
 
 
 def _run_consistency_loop(
@@ -986,11 +1047,14 @@ def _run_consistency_loop(
     initial_draft: str,
 ) -> dict[str, Any]:
     revision_cfg = _config_section(config, "revision")
-    max_rounds = max(0, int(revision_cfg.get("max_rounds", 2) or 2))
+    max_rounds = max(0, int(revision_cfg.get("max_rounds", 2)))
     draft = initial_draft
     attempts: list[dict[str, Any]] = []
-    audit_review = harness.review_draft(draft=draft, errors=[])
-    _write_json(output_root / "review_report.json", audit_review)
+    harness.set_manuscript_context(_manuscript_context(
+        config, literature_payload, execution_payload, claim_payload, output_root,
+    ))
+    reviews_dir = output_root / "reviews"
+    reviews_dir.mkdir(exist_ok=True)
 
     for round_index in range(max_rounds + 1):
         # #region debug-point A:consistency-loop-draft
@@ -1051,13 +1115,24 @@ def _run_consistency_loop(
             stability_rows=_train_subsampling_rows(execution_payload["results"])
             if _config_section(config, "paper_quality").get("require_train_subsampling_summary") else None,
             results=execution_payload["results"],
+            query_diagnostics=build_query_diagnostics(output_root / "experiments" / "route_b2_artifacts")
+            if _config_section(config, "paper_quality").get("require_query_outcome_table") else None,
         )
         _write_json(output_root / "paper_quality_report.json", quality_report)
         if not quality_report["ok"]:
             validation_report["errors"].extend(quality_report["errors"])
-            validation_report["error_count"] = len(validation_report["errors"])
-            validation_report["ok"] = False
+        _enforce_runtime_budget(config, harness.runtime, stage="review", before_call=True,
+                                call_log_path=output_root / "model_calls.jsonl")
+        audit_review = harness.review_draft(draft=draft, errors=validation_report["errors"])
+        audit_review = {**audit_review, "draft_sha256": hashlib.sha256(draft.encode("utf-8")).hexdigest(),
+                        "round": round_index, "scope": "full_public_manuscript"}
+        _write_json(output_root / "review_report.json", audit_review)
+        _write_json(reviews_dir / f"round_{round_index}.json", audit_review)
+        validation_report["errors"].extend(_review_errors(audit_review))
+        validation_report["error_count"] = len(validation_report["errors"])
+        validation_report["ok"] = not validation_report["errors"]
         validation_report["paper_quality"] = quality_report
+        validation_report["review"] = audit_review
         attempts.append({"round": round_index, "validation_report": validation_report})
         if validation_report["ok"]:
             return {
@@ -1076,7 +1151,11 @@ def _run_consistency_loop(
                 },
             }
 
-        review, revised_draft = harness.review_and_revise(draft=draft, errors=validation_report["errors"])
+        _enforce_runtime_budget(config, harness.runtime, stage="revision", before_call=True,
+                                call_log_path=output_root / "model_calls.jsonl")
+        review, revised_draft = harness.review_and_revise(
+            draft=draft, errors=validation_report["errors"], review=audit_review,
+        )
         audit_review = review
         _write_json(output_root / "review_report.json", audit_review)
         for claim_dict in claim_payload["claims"]:
@@ -1191,6 +1270,16 @@ def _fill_resource_snapshot(
     if diagnostic_model_calls:
         snapshot.extra["diagnostic_model_calls"] = diagnostic_model_calls
     snapshot.extra["workflow_model_calls"] = snapshot.model_calls
+    # Team request_count is the number of stage invocations. Preserve this
+    # historical field while exposing separately observed provider receipts.
+    snapshot.extra["model_call_scope"] = "workflow_stage_invocations"
+    records = usage_summary.get("records") or []
+    snapshot.extra["observed_provider_calls"] = sum(int(r.get("provider_calls", 0) or 0) for r in records)
+    snapshot.extra["missing_usage_calls"] = sum(int(r.get("missing_usage_calls", 0) or 0) for r in records)
+    snapshot.extra["usage_sources"] = sorted({str(r.get("usage_source") or "legacy_unspecified") for r in records})
+    snapshot.extra["usage_statuses"] = sorted({str(r.get("usage_status") or "legacy_unspecified") for r in records})
+    snapshot.extra["legacy_usage_records"] = sum("usage_source" not in r for r in records)
+    snapshot.extra["provider_count_scope"] = "observed llm_usage events; not guaranteed to include unreported or in-flight calls"
 
 
 def _resume_or_compute(
@@ -1331,6 +1420,8 @@ def _durable_usage_summary(path: Path, runtime) -> dict[str, Any]:
     return {
         "total": {
             "request_count": len(records),
+            "provider_calls": sum(int(item.get("provider_calls", 0) or 0) for item in records),
+            "missing_usage_calls": sum(int(item.get("missing_usage_calls", 0) or 0) for item in records),
             "prompt_tokens": sum(item["prompt_tokens"] for item in records),
             "completion_tokens": sum(item["completion_tokens"] for item in records),
             "total_tokens": sum(item["total_tokens"] for item in records),
@@ -1340,7 +1431,8 @@ def _durable_usage_summary(path: Path, runtime) -> dict[str, Any]:
 
 
 def _enforce_runtime_budget(
-    config: dict[str, Any], runtime, *, stage: str, call_log_path: Path | None = None
+    config: dict[str, Any], runtime, *, stage: str, call_log_path: Path | None = None,
+    before_call: bool = False,
 ) -> None:
     budget = _config_section(config, "budget")
     usage = _durable_usage_summary(call_log_path, runtime) if call_log_path else runtime.usage_summary()
@@ -1354,12 +1446,18 @@ def _enforce_runtime_budget(
     estimated_cost = (total_tokens / 1000.0) * cost_per_1k_tokens if cost_per_1k_tokens > 0 else 0.0
     if max_total_tokens is not None and total_tokens > int(max_total_tokens):
         raise RuntimeError(f"token budget exceeded at stage {stage}: {total_tokens} > {int(max_total_tokens)}")
+    if before_call and max_total_tokens is not None and total_tokens == int(max_total_tokens):
+        raise RuntimeError(f"token budget exhausted before stage {stage}: {total_tokens}")
     if max_model_calls is not None and request_count > int(max_model_calls):
         raise RuntimeError(f"model call budget exceeded at stage {stage}: {request_count} > {int(max_model_calls)}")
+    if before_call and max_model_calls is not None and request_count == int(max_model_calls):
+        raise RuntimeError(f"model call budget exhausted before stage {stage}: {request_count}")
     if max_estimated_cost is not None and estimated_cost > float(max_estimated_cost):
         raise RuntimeError(
             f"estimated cost budget exceeded at stage {stage}: {estimated_cost:.6f} > {float(max_estimated_cost):.6f}"
         )
+    if before_call and cost_per_1k_tokens > 0 and max_estimated_cost is not None and estimated_cost == float(max_estimated_cost):
+        raise RuntimeError(f"estimated cost budget exhausted before stage {stage}: {estimated_cost:.6f}")
 
 
 def _config_section(config: dict[str, Any], key: str) -> dict[str, Any]:

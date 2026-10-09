@@ -1,3 +1,4 @@
+
 # Python
 __pycache__/
 *.py[cod]
@@ -12,6 +13,7 @@ ENV/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.runtime_cache/
 *.egg-info/
 .coverage
 .coverage.*
@@ -72,6 +74,7 @@ docs/ai/
 
 # logs
 logs/
+/runs/
 
 # Browser automation runtime artifacts
 .browser/

@@ -136,6 +136,11 @@ def test_resume_continues_after_interruption(tmp_path) -> None:
     else:
         raise AssertionError("workflow should have interrupted")
 
+    failed_usage = json.loads((output_dir / "resource_usage.json").read_text(encoding="utf-8"))
+    assert failed_usage["extra"]["run_status"] == "failed"
+    assert failed_usage["extra"]["failure_stage"] == "literature_research"
+    assert failed_usage["extra"]["partial_report"] is True
+
     resumed = _config()
     result = run_pipeline(
         topic="Evidence-aware context engineering for autonomous research agents",

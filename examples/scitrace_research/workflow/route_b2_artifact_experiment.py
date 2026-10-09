@@ -92,7 +92,7 @@ def main() -> None:
         "claim_boundary": (
             "The supported claim is limited to the unweighted SciFact/NFCorpus macro-average at budget 5. "
             "SciFact is individually significant; NFCorpus has a positive point estimate whose interval "
-            "slightly crosses zero. FiQA is an explicitly reported lexical out-of-domain negative result."
+            "slightly crosses zero. FiQA is an independently trained finance-domain lexical evaluation with a negative point estimate, not a zero-shot transfer test. All intervals condition on the realized batch allocation."
         ),
     }
     output = Path(args.output).resolve()
