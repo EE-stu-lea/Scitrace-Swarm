@@ -101,7 +101,7 @@ def test_evidence_ids_become_numeric_citations_and_are_hidden_in_references():
     )
     assert '[1] supports this statement' in tex
     assert r'\item Tuia, D. \emph{A paper.} 2022.' in tex
-    assert 'evidence\_' not in tex
+    assert 'evidence\\_' not in tex
 
 
 def test_bullet_reference_ids_become_numeric_citations():
@@ -114,7 +114,7 @@ def test_bullet_reference_ids_become_numeric_citations():
     assert '[1] supports this statement' in tex
     assert r'\begin{enumerate}' in tex
     assert r'\item Frisoni, G. \emph{BioReader.} 2022.' in tex
-    assert 'evidence\_' not in tex
+    assert 'evidence\\_' not in tex
 
 
 def test_trailing_reference_ids_become_numeric_citations():
@@ -126,7 +126,7 @@ def test_trailing_reference_ids_become_numeric_citations():
         '`evidence_a135671286e77abdbd55`\n'
     )
     assert 'A prior study [1] supports this.' in tex
-    assert 'evidence\_' not in tex
+    assert 'evidence\\_' not in tex
     assert 'Smith (2024). A prior study.' in tex
 
 
@@ -251,9 +251,9 @@ def test_audit_only_research_hypothesis_and_claim_ids_are_hidden():
         'Claim `claim_0b331390033b36b96e1f` (section: results, status: `supported`) '
         'states that the result is bounded.'
     )
-    assert 'rq\_' not in tex
-    assert 'hyp\_' not in tex
-    assert 'claim\_' not in tex
+    assert 'rq\\_' not in tex
+    assert 'hyp\\_' not in tex
+    assert 'claim\\_' not in tex
     assert 'We study this question: why?' in tex
     assert 'The hypothesis states an effect.' in tex
     assert 'This outcome is recorded with status supported.' in tex

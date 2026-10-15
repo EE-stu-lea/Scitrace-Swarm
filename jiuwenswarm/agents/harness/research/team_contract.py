@@ -22,6 +22,9 @@ class TeamStageContract:
     result_kind: str
     write_scope: tuple[str, ...]
     summary: str
+    # Skill packages inlined into this stage's prompt when the run configures
+    # `skills_dir`; without that key the prompt stays byte-identical to v4.
+    skills: tuple[str, ...] = ()
 
 
 TEAM_STAGE_CONTRACTS: dict[tuple[str, str], TeamStageContract] = {
@@ -60,6 +63,9 @@ TEAM_STAGE_CONTRACTS: dict[tuple[str, str], TeamStageContract] = {
         result_kind="markdown",
         write_scope=("draft_text",),
         summary="Write the paper draft without changing validated claim states or experiment metrics.",
+        # SciTrace default: the Writer self-check plus the shared statistical
+        # notation rules, inlined only when `skills_dir` is configured.
+        skills=("pre-submit-checklist", "stats-notation"),
     ),
     ("review", "review_draft"): TeamStageContract(
         stage="review",
@@ -68,6 +74,11 @@ TEAM_STAGE_CONTRACTS: dict[tuple[str, str], TeamStageContract] = {
         result_kind="json",
         write_scope=("review_report",),
         summary="Produce structured audit findings only; do not edit the draft directly.",
+        # v5 ablation: inlining stats-notation into the reviewer produced extra
+        # subjective findings and the revision loop stopped converging
+        # (16->3->2 failed, vs the skill-free v4 loop's 16->2->0 pass). The
+        # reviewer prompt stays skill-free; notation rules remain inlined on
+        # the writer side only.
     ),
     ("revision", "targeted_revision"): TeamStageContract(
         stage="revision",
@@ -76,6 +87,7 @@ TEAM_STAGE_CONTRACTS: dict[tuple[str, str], TeamStageContract] = {
         result_kind="markdown",
         write_scope=("draft_text",),
         summary="Apply only targeted revisions that resolve the provided structured errors.",
+        skills=("pre-submit-checklist", "stats-notation"),
     ),
 }
 
@@ -119,6 +131,7 @@ def build_team_query(
     system_prompt: str,
     user_prompt: str,
     compact: bool = False,
+    skills_block: str = "",
 ) -> str:
     handoff_spec = {
         "stage": contract.stage,
@@ -171,11 +184,15 @@ def build_team_query(
                          separators=(",", ":") if compact else None)
             + "\nDo not add any text after the handoff block.\n"
         )
+    # Inlined Skill guidance sits after the role description and before the
+    # stage's task instructions; an empty block keeps the query byte-identical.
+    inlined_skills = skills_block.strip()
     return (
         envelope_rules
         + "\n# Role Personas\n"
         + "\n".join(f"- `{role}`: {persona}" for role, persona in ROLE_PERSONAS.items()
                     if not compact or role in {ROLE_RESEARCH_LEADER, contract.primary_member})
+        + (f"\n{inlined_skills}" if inlined_skills else "")
         + "\n\n# Stage System Prompt\n"
         + system_prompt.strip()
         + "\n\n# Stage User Prompt\n"
@@ -191,6 +208,7 @@ def build_direct_specialist_query(
     system_prompt: str,
     user_prompt: str,
     compact: bool = False,
+    skills_block: str = "",
 ) -> str:
     """Call a named specialist once without asking the model to poll a task board.
 
@@ -211,10 +229,14 @@ def build_direct_specialist_query(
     }
     shape = json.dumps(handoff, ensure_ascii=False, indent=None if compact else 2,
                        separators=(",", ":") if compact else None)
+    # Inlined Skill guidance sits after the role description and before the
+    # stage's task instructions; an empty block keeps the query byte-identical.
+    inlined_skills = skills_block.strip()
     rules = (
         f"You are `{contract.primary_member}` in the SciTrace research workflow. "
         f"{ROLE_PERSONAS[contract.primary_member]}\n"
-        f"Task: {contract.summary}\n"
+        + (f"{inlined_skills}\n" if inlined_skills else "")
+        + f"Task: {contract.summary}\n"
         "Complete this stage directly. Do not coordinate, delegate, poll tasks, browse, "
         "run tools, or invent citations or experiment results. Preserve supplied IDs "
         "and numerical results exactly. Answer only from the two stage prompts.\n"

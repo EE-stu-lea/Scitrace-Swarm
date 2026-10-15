@@ -19,6 +19,7 @@ from jiuwenswarm.agents.harness.research.team_contract import (
     validate_team_handoff_metadata,
 )
 from jiuwenswarm.symphony.llm import get_llm_token_usage_summary, reset_llm_token_usage
+from jiuwenswarm.agents.harness.research.skill_context import build_skills_block
 from jiuwenswarm.agents.harness.research.stage_policy import (
     apply_stage_capability_profile, prompt_audit, scope_team_spec, stage_resource_limits,
 )
@@ -807,6 +808,7 @@ class JiuwenSwarmResearchTeamRuntime:
         call_log_path: str | Path | None = None,
         output_root: str | Path | None = None,
         compact_handoff: bool = False,
+        config: dict[str, Any] | None = None,
     ) -> None:
         self._backend = backend
         self._research_id = research_id
@@ -815,6 +817,23 @@ class JiuwenSwarmResearchTeamRuntime:
         self._request_count = 0
         self._usage_records: list[dict[str, Any]] = []
         self._compact_handoff = bool(compact_handoff)
+        self._config = dict(config or {})
+
+    def _stage_skills_block(self, contract: Any) -> str:
+        """Inline the stage's Skill guidance into the assembled query.
+
+        Injection is opt-in: without a configured ``skills_dir`` (or for a
+        stage without contracted skills) the block is empty and the submitted
+        query stays byte-identical to the v4 behavior, so prompt_audit deltas
+        are attributable solely to the inlined skills.
+        """
+        skills_dir = str(self._config.get("skills_dir") or "").strip()
+        if not skills_dir or not contract.skills:
+            return ""
+        skills_root = Path(skills_dir).expanduser()
+        if not skills_root.is_absolute():
+            skills_root = (Path.cwd() / skills_root).resolve()
+        return build_skills_block(list(contract.skills), skills_root)
 
     def _record_call(
         self, *, stage: str, operation: str, status: str,
@@ -886,6 +905,7 @@ class JiuwenSwarmResearchTeamRuntime:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             compact=self._compact_handoff,
+            skills_block=self._stage_skills_block(contract),
         )
         self._request_count += 1
         try:
@@ -927,6 +947,7 @@ class JiuwenSwarmResearchTeamRuntime:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             compact=self._compact_handoff,
+            skills_block=self._stage_skills_block(contract),
         )
         self._request_count += 1
         try:

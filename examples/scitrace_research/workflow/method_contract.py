@@ -52,7 +52,10 @@ def _negated(text: str, match: re.Match[str], *, missing_intervals: bool = False
         # a negation of that assertion ("not only at budget five" still is).
         context = re.sub(r"\b(?:without|no)\s+intervals?\b", "intervals", context,
                          flags=re.IGNORECASE)
-    return bool(re.search(r"\b(?:not|never|no|without|cannot|can't|doesn't|don't)\b", context, re.IGNORECASE))
+    return bool(re.search(
+        r"\b(?:not|never|no|without|cannot|can't|doesn't|don't|rather\s+than|instead\s+of|"
+        r"as\s+opposed\s+to|unlike|distinct\s+from)\b",
+        context, re.IGNORECASE))
 
 
 def _training_scope_is_asserted(match: re.Match[str]) -> bool:

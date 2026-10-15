@@ -429,6 +429,43 @@ def test_negated_continuous_depth_statement_is_not_blocked() -> None:
     assert "paper_continuous_depth_claim" in {error["code"] for error in positive["errors"]}
 
 
+def test_pathway_negations_inside_the_matched_span_are_not_blocked() -> None:
+    rule = {
+        "code": "paper_pathway_allocation_claim",
+        "pattern": r"(?:reallocat|allocat)[^.\n]{0,100}(?:pathways?|sub-quer(?:y|ies))",
+    }
+    for statement in (
+        "The allocator does not rerank documents, rerun retrievers, or "
+        "allocate budget among retrievers, retrieval pathways, or sub-queries.",
+        "The allocator therefore redistributes a known total capacity rather "
+        "than choosing a retrieval pathway per query.",
+        "Route B2 is a batch-level document-depth allocation method, not a "
+        "per-query passage-memory or retrieval-pathway router.",
+    ):
+        report = audit_draft(
+            "# Paper\n## Method\n" + statement,
+            evidence=[], config={"enabled": True, "forbidden_patterns": [rule]},
+        )
+        assert "paper_pathway_allocation_claim" not in {error["code"] for error in report["errors"]}
+    positive = audit_draft(
+        "# Paper\n## Method\nThe allocator allocates budget across retrieval pathways.",
+        evidence=[], config={"enabled": True, "forbidden_patterns": [rule]},
+    )
+    assert "paper_pathway_allocation_claim" in {error["code"] for error in positive["errors"]}
+
+
+def test_forbidden_phrase_with_built_in_negation_stays_enforceable() -> None:
+    rule = {
+        "code": "paper_dataset_claim_conflict",
+        "pattern": r"\bdo\s+not\s+extend\s+(?:it|the\s+(?:effect|claim))\s+to\s+any\s+individual\s+dataset\b",
+    }
+    report = audit_draft(
+        "# Paper\n## Discussion\nWe do not extend the effect to any individual dataset.",
+        evidence=[], config={"enabled": True, "forbidden_patterns": [rule]},
+    )
+    assert "paper_dataset_claim_conflict" in {error["code"] for error in report["errors"]}
+
+
 def test_direct_adaptive_retrieval_prior_is_required() -> None:
     draft = (
         "# Paper\n## Related Work\n"

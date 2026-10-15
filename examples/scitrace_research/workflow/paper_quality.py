@@ -13,6 +13,24 @@ from .method_contract import audit_method_contract
 from .paper_narrative import audit_narrative, has_substantive_figure_caption
 
 
+# Negation markers that turn a forbidden-pattern hit into an explicit
+# correction of a known erroneous claim, mirroring method_contract._negated.
+_NEGATION_RE = (
+    r"\b(?:not|never|no|without|cannot|can't|doesn't|don't|"
+    r"rather\s+than|instead\s+of|as\s+opposed\s+to|unlike|distinct\s+from)\b"
+)
+# Forbidden rules whose claim term sits at the tail of their pattern. For
+# these, a negation inside the matched span but before the claim term also
+# exempts the match ("The allocator does not rerank ... or allocate budget
+# among retrievers, retrieval pathways"). Rules whose forbidden phrase itself
+# carries the negation (for example "do not extend ...") are absent and keep
+# the prefix-only exemption, so they stay enforceable.
+_FORBIDDEN_TERM_RES = {
+    "paper_pathway_allocation_claim": r"(?:pathways?|sub-quer(?:y|ies))",
+    "paper_continuous_depth_claim": r"\bcontinuous\s+function\b",
+}
+
+
 def focus_matches(title: str, summary: str, terms: Iterable[str]) -> list[str]:
     """Return the configured topical stems present in title or abstract.
 
@@ -522,19 +540,13 @@ def audit_draft(
         for match in matches:
             sentence_start = max(public_draft.rfind(".", 0, match.start()), public_draft.rfind("\n", 0, match.start()))
             prefix = public_draft[max(sentence_start + 1, match.start() - 60):match.start()]
-            # The depth rule matches through "continuous function". A writer
-            # can correctly say "depth is never a continuous function", with
-            # the negation inside the matched span rather than in its prefix.
-            matched_text = match.group()
-            negated_depth = (
-                str(rule.get("code")) == "paper_continuous_depth_claim"
-                and bool(re.search(
-                    r"\b(?:not|never|no|without|cannot|can't|doesn't|don't)\b"
-                    r"[^.\n]{0,70}\bcontinuous\s+function\b",
-                    matched_text, flags=re.IGNORECASE,
-                ))
-            )
-            if not negated_depth and not re.search(r"\b(?:not|never|no|without|cannot|can't|doesn't|don't)\b", prefix, flags=re.IGNORECASE):
+            negated = bool(re.search(_NEGATION_RE, prefix, flags=re.IGNORECASE))
+            term_pattern = _FORBIDDEN_TERM_RES.get(str(rule.get("code")))
+            if not negated and term_pattern:
+                term = re.search(term_pattern, match.group(), flags=re.IGNORECASE)
+                negated = bool(term and re.search(
+                    _NEGATION_RE, match.group()[:term.start()], flags=re.IGNORECASE))
+            if not negated:
                 asserted = True
                 break
         if asserted:

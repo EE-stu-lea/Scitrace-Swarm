@@ -39,9 +39,15 @@ def _copy_sqlite_consistent(source: Path, destination: Path) -> None:
     if not source.is_file():
         return
     destination.unlink(missing_ok=True)
-    with sqlite3.connect(f'{source.resolve().as_uri()}?mode=ro', uri=True) as original:
-        with sqlite3.connect(destination) as packaged:
+    original = sqlite3.connect(f'{source.resolve().as_uri()}?mode=ro', uri=True)
+    try:
+        packaged = sqlite3.connect(destination)
+        try:
             original.backup(packaged)
+        finally:
+            packaged.close()
+    finally:
+        original.close()
 
 
 def _valid_official_pr_url(value: str) -> bool:

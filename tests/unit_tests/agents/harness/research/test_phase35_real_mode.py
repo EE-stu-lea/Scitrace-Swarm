@@ -110,6 +110,7 @@ class _RealLiteratureProvider:
                     "provider": "openalex",
                     "verified_doi": True,
                     "verified_url": True,
+                    "raw_payload": {},
                 },
             )()
         ]

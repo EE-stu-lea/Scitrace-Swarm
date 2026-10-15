@@ -860,6 +860,8 @@ def build_runtime(
             call_log_path=call_log_path,
             output_root=root,
             compact_handoff=bool(((config or {}).get("team") or {}).get("compact_handoff", False)),
+            # Config passthrough enables opt-in skills_dir prompt injection.
+            config=config or {},
         )
     if normalized == "real_team":
         root = Path(output_root) if output_root is not None else None
@@ -875,6 +877,8 @@ def build_runtime(
             call_log_path=call_log_path,
             output_root=root,
             compact_handoff=bool(((config or {}).get("team") or {}).get("compact_handoff", False)),
+            # Config passthrough enables opt-in skills_dir prompt injection.
+            config=config or {},
         )
     raise ResearchRuntimeError(f"unsupported runtime mode: {mode}")
 

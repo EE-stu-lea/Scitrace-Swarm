@@ -9,6 +9,10 @@ import shutil
 import time
 from typing import Any
 
+from jiuwenswarm.agents.harness.research.citation_expansion import (
+    expansion_work_key,
+    run_citation_expansion,
+)
 from jiuwenswarm.agents.harness.research.claim_compiler import (
     ClaimCompilerInput,
     sanitize_claim_payload,
@@ -572,6 +576,13 @@ def _run_topic_intake(
     }
 
 
+def _append_literature_event(evidence_dir: Path, payload: dict[str, Any]) -> None:
+    path = evidence_dir / "literature_events.jsonl"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"timestamp": utc_now_iso(), **payload}, ensure_ascii=False, sort_keys=True))
+        handle.write("\n")
+
+
 def _run_literature_research(
     *,
     topic: str,
@@ -631,6 +642,31 @@ def _run_literature_research(
         minimum_priority_results=int(literature_cfg.get("minimum_priority_results", 0) or 0),
         reserved_title_phrases=literature_cfg.get("reserved_title_phrases") or [],
     )
+    expansion_outcome = None
+    if bool(literature_cfg.get("enable_citation_expansion", False)):
+        # One-hop citation-graph expansion over real OpenAlex calls. The runner
+        # degrades any failure to `skipped`, so base results always survive.
+        started = time.perf_counter()
+        expansion_outcome = run_citation_expansion(
+            results,
+            focus_terms=[str(term) for term in literature_cfg.get("focus_terms", [])],
+            minimum_focus_terms=int(literature_cfg.get("minimum_focus_terms", 0) or 0),
+            max_expansion_results=int(literature_cfg.get("max_expansion_results", 20) or 20),
+            timeout_seconds=float(literature_cfg.get("timeout_seconds", 20) or 20),
+            retries=int(literature_cfg.get("retries", 2) or 2),
+        )
+        elapsed = max(0.0, time.perf_counter() - started)
+        resource_snapshot.tool_calls += expansion_outcome.api_call_count
+        resource_snapshot.tools_by_name["literature_citation_expansion"] = (
+            resource_snapshot.tools_by_name.get("literature_citation_expansion", 0)
+            + expansion_outcome.api_call_count
+        )
+        resource_snapshot.total_tool_seconds += elapsed
+        resource_snapshot.tool_seconds_by_name["literature_citation_expansion"] = (
+            resource_snapshot.tool_seconds_by_name.get("literature_citation_expansion", 0.0) + elapsed
+        )
+        _append_literature_event(evidence_dir, expansion_outcome.to_audit_event())
+        results = results + list(expansion_outcome.kept)
     min_results = int(literature_cfg.get("min_relevant_results", 0) or 0)
     selection_path = evidence_dir / "literature_selection.json"
     _write_json(selection_path, {
@@ -641,6 +677,8 @@ def _run_literature_research(
         "priority_title_term_groups": literature_cfg.get("priority_title_term_groups", []),
         "candidates": selection_audit,
         "selected_dois": [result.doi for result in results],
+        **({"citation_expansion": expansion_outcome.to_audit_event()}
+           if expansion_outcome is not None else {}),
     })
     if len(results) < min_results:
         raise RuntimeError(
@@ -656,8 +694,17 @@ def _run_literature_research(
             f"{minimum_priority}. Inspect {selection_path} and rerun live retrieval."
         )
 
+    expansion_seed_by_key = dict(expansion_outcome.provenance) if expansion_outcome else {}
     evidence_nodes: list[dict[str, Any]] = []
     for result in results:
+        metadata = {
+            "provider": result.provider,
+            "verified_doi": result.verified_doi,
+            "verified_url": result.verified_url,
+        }
+        expansion_seed = expansion_seed_by_key.get(expansion_work_key(result))
+        if expansion_seed:
+            metadata["expansion_seed_openalex_id"] = expansion_seed
         node = LiteratureEvidence(
             title=result.title,
             authors=result.authors,
@@ -666,23 +713,31 @@ def _run_literature_research(
             doi=result.doi,
             summary=result.summary,
             reliability_score=result.reliability_score,
-            metadata={
-                "provider": result.provider,
-                "verified_doi": result.verified_doi,
-                "verified_url": result.verified_url,
-            },
+            metadata=metadata,
         )
         provenance.record_node(node, session_id="")
         evidence_nodes.append(node.to_dict())
     _write_json(evidence_dir / "literature.json", {"topic": topic, "evidence": evidence_nodes})
-    return {
+    # Expansion requests are real retrieval API calls and share the same
+    # strict-real accounting as the keyword search queries.
+    retrieval_call_count = len(search_queries) + (
+        expansion_outcome.api_call_count if expansion_outcome else 0
+    )
+    payload = {
         "evidence": evidence_nodes,
         "requested_provider": provider_name,
         "resolved_providers": sorted({result.provider for result in results}),
         "fixture_used": fixture_used,
         "fallback_used": fallback_used,
-        "retrieval_call_count": len(search_queries),
+        "retrieval_call_count": retrieval_call_count,
     }
+    if expansion_outcome is not None:
+        payload["citation_expansion"] = {
+            "status": expansion_outcome.status,
+            "kept_count": len(expansion_outcome.kept),
+            "api_call_count": expansion_outcome.api_call_count,
+        }
+    return payload
 
 
 def _run_experiment_plan(

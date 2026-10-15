@@ -2,6 +2,10 @@
 mode: real_team
 strict_real: true
 no_mock_fallback: true
+# Local Skill packages (pre-submit-checklist, stats-notation) inlined into the
+# draft/review/revision stage prompts when this key is present; removing the
+# key restores byte-identical v4 prompts.
+skills_dir: examples/scitrace_research/skills
 models:
   defaults:
   - model_client_config:
@@ -91,6 +95,11 @@ literature:
   - scientific
   minimum_focus_terms: 2
   min_relevant_results: 6
+  # One-hop OpenAlex citation expansion of the filtered first-round results.
+  # Every expansion call is a real retrieval API call; any failure degrades to
+  # a `skipped` audit event without blocking the stage.
+  enable_citation_expansion: true
+  max_expansion_results: 20
   priority_title_term_groups:
   - - retriev
   - - allocat
@@ -122,7 +131,8 @@ context:
   token_budget: 1200
   include_conflicts: true
 revision:
-  max_rounds: 2
+  # Allow a third revision round for remaining quality gate findings.
+  max_rounds: 3
 paper_quality:
   enabled: true
   validate_typesetting: true
@@ -330,7 +340,8 @@ paper_quality:
   require_query_outcome_table: true
 budget:
   max_total_tokens: 6000000
-  max_model_calls: 12
+  # Allow enough model calls for the additional review and revision round.
+  max_model_calls: 17
   estimated_cost_per_1k_tokens: 0.0
   max_estimated_cost: 0.0
 debug:

@@ -113,9 +113,14 @@ def revalidate(run_dir: Path) -> dict:
     draft_path = run_dir / "draft.md"
     draft_bytes = draft_path.read_bytes()
     draft_hash = hashlib.sha256(draft_bytes).hexdigest()
+    # Windows text-mode writes translate LF to CRLF on disk while the durable
+    # checkpoint keeps the in-memory LF text. read_text() restores the
+    # checkpointed form for textual comparisons and gate replay; the
+    # raw-byte sha256 above still binds the exact on-disk draft.
+    draft_text = draft_path.read_text(encoding="utf-8")
     partial_evidence = None
     if checkpoint.status == "completed":
-        if checkpoint.payload.get("draft") != draft_bytes.decode("utf-8"):
+        if checkpoint.payload.get("draft") != draft_text:
             raise ValueError("The Agent draft differs from its durable checkpoint")
         if original_validation is None or original_validation.get("draft_sha256") != draft_hash:
             raise ValueError("The failed validation does not bind to this Agent draft")
@@ -127,18 +132,18 @@ def revalidate(run_dir: Path) -> dict:
     claims = _read_json(run_dir / "claims.json")
     results = _read_json(run_dir / "experiments" / "results.json")
     structured = _complete_structured_references(
-        _extract_structured_references(draft_bytes.decode("utf-8")),
+        _extract_structured_references(draft_text),
         literature_payload=literature,
         claim_payload=claims,
         execution_payload=results,
     )
-    structured["draft_text"] = draft_bytes.decode("utf-8")
+    structured["draft_text"] = draft_text
     scientific = ScientificConsistencyGateRail(
         enabled=True, output_root=run_dir, block_on_error=False
     ).check_payload(structured, session_id="")
     from .workflow.query_diagnostics import build_query_diagnostics
     quality = audit_draft(
-        draft_bytes.decode("utf-8"),
+        draft_text,
         evidence=literature["evidence"],
         config=config.get("paper_quality") or {},
         table_rows=_primary_results_table_rows(results)
@@ -179,9 +184,17 @@ def revalidate(run_dir: Path) -> dict:
     if partial_evidence is not None:
         shutil.copyfile(run_dir / "review_report.json", run_dir / "revalidation_original_review.json")
     source_db = run_dir / "research.db"
-    with sqlite3.connect(f"{source_db.as_uri()}?mode=ro", uri=True) as original_db:
-        with sqlite3.connect(run_dir / "revalidation_original_research.db") as saved_db:
+    # sqlite3's `with` only manages transactions; close explicitly so the
+    # backup handles release before later run-directory operations.
+    original_db = sqlite3.connect(f"{source_db.as_uri()}?mode=ro", uri=True)
+    try:
+        saved_db = sqlite3.connect(run_dir / "revalidation_original_research.db")
+        try:
             original_db.backup(saved_db)
+        finally:
+            saved_db.close()
+    finally:
+        original_db.close()
     now = utc_now_iso()
     report = {
         "ok": True,
@@ -226,7 +239,7 @@ def revalidate(run_dir: Path) -> dict:
     (run_dir / "run_manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    store.set_stage("consistency_loop", status="completed", payload={"draft": draft_bytes.decode("utf-8"), "validation_report": report})
+    store.set_stage("consistency_loop", status="completed", payload={"draft": draft_text, "validation_report": report})
     store.set_metadata("status", "success")
     store.append_audit_event("offline_gate_revalidation", {
         "draft_sha256": draft_hash,

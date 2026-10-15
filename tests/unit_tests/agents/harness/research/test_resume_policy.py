@@ -83,11 +83,17 @@ def test_resume_check_is_read_only_and_snapshot_includes_uncheckpointed_wal(tmp_
         snapshot = run / 'resume_history' / 'first'
         audit = snapshot_resume(run, next_config, snapshot, topic="research question")
         assert 'provider_usage.jsonl' in audit['preserved_files_sha256']
-        with sqlite3.connect(snapshot / 'research.db') as restored:
+        restored = sqlite3.connect(snapshot / 'research.db')
+        try:
             assert restored.execute('select stage,status from run_stage').fetchone() == ('topic_intake', 'failed')
+        finally:
+            restored.close()
         packaged = tmp_path / 'submission.db'
         _copy_sqlite_consistent(run / 'research.db', packaged)
-        with sqlite3.connect(packaged) as restored:
+        restored = sqlite3.connect(packaged)
+        try:
             assert restored.execute('select stage,status from run_stage').fetchone() == ('topic_intake', 'failed')
+        finally:
+            restored.close()
     finally:
         conn.close()

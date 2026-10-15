@@ -127,9 +127,14 @@ def inspect_resume(run_dir: Path, config_path: Path, *, topic: str) -> dict[str,
             candidate = Path(str(source) + suffix)
             if candidate.is_file():
                 shutil.copyfile(candidate, Path(str(copied) + suffix))
-        with sqlite3.connect(f'{copied.as_uri()}?mode=ro', uri=True) as conn:
+        # sqlite3's `with` only manages transactions; close explicitly so
+        # Windows releases the handle before TemporaryDirectory cleanup.
+        conn = sqlite3.connect(f'{copied.as_uri()}?mode=ro', uri=True)
+        try:
             checkpoints = [{"stage": stage, "status": status}
                            for stage, status in conn.execute("select stage,status from run_stage order by rowid")]
+        finally:
+            conn.close()
     return {
         "policy": "runtime-only-recovery-v1", "config_changes": changes,
         "previous_config_sha256": hashlib.sha256(previous_path.read_bytes()).hexdigest(),
@@ -161,9 +166,15 @@ def snapshot_resume(run_dir: Path, config_path: Path, snapshot_dir: Path, *, top
     # SQLite's backup API folds an uncheckpointed WAL into one consistent
     # database image. Copying research.db alone would omit recent checkpoints.
     db_snapshot = snapshot_dir / "research.db"
-    with sqlite3.connect(f'{(run_dir / "research.db").as_uri()}?mode=ro', uri=True) as source_db:
-        with sqlite3.connect(db_snapshot) as target_db:
+    source_db = sqlite3.connect(f'{(run_dir / "research.db").as_uri()}?mode=ro', uri=True)
+    try:
+        target_db = sqlite3.connect(db_snapshot)
+        try:
             source_db.backup(target_db)
+        finally:
+            target_db.close()
+    finally:
+        source_db.close()
     db_snapshot.chmod(0o600)
     files["research.db"] = hashlib.sha256(db_snapshot.read_bytes()).hexdigest()
     audit["preserved_files_sha256"] = files
